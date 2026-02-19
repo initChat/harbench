@@ -18,29 +18,7 @@ Thank you for your interest in contributing to HARBench! This guide walks you th
 
 ## Development Setup
 
-1. Fork and clone the repository:
-
-```bash
-git clone https://github.com/<your-username>/har-bench2.git
-cd har-bench2
-```
-
-2. Set up the environment:
-
-```bash
-python -m venv .env
-source .env/bin/activate
-pip install torch torchvision torchaudio
-pip install -r requirements.txt
-```
-
-3. Preprocess a small dataset for testing:
-
-```bash
-python preprocess.py --dataset dsads --download
-```
-
-See the [README](README.md) for full setup instructions including Docker.
+Fork the repository, then follow the [README](README.md) to set up your environment and preprocess all required datasets.
 
 ## Adding a New Model
 
@@ -253,7 +231,7 @@ Pretrained weights are saved to `results/pretrain/`. Copy the backbone weights t
 
 ### Step 5: Verify Your Model
 
-Make sure you have preprocessed at least `dsads` (see [Development Setup](#development-setup)), then run these commands:
+Make sure you have completed the [Development Setup](#development-setup) (all datasets preprocessed), then run these commands:
 
 ```bash
 # Fine-tune on a single dataset (quick sanity check)
