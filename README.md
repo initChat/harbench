@@ -45,6 +45,40 @@ python preprocess.py --dataset dsads pamap2 mhealth realdisp mex forthtrace hart
 python run_benchmark.py --model mtl --eval all
 ```
 
+## Using the Feature Extractor (Python API)
+
+Want to turn your own IMU data into feature vectors with a HARBench model,
+without running the full benchmark pipeline? Install the package and call
+`load_model` / `encode`.
+
+```bash
+# Install directly from GitHub (bundles the mtl weights)
+pip install git+https://github.com/litchi7777/harbench.git
+```
+
+```python
+import numpy as np
+import harbench
+
+# Load the mtl feature extractor (pretrained weights ship with the package)
+model = harbench.load_model("mtl")          # device auto-selects cuda/cpu
+
+# x: windowed IMU data shaped (num_windows, num_sensors * 3, sequence_length)
+# The mtl weights were trained on 30 Hz, 5-second windows (sequence_length = 150).
+x = np.random.randn(8, 3, 150).astype("float32")
+
+feats = model.encode(x)                      # -> (8, 512) numpy array
+```
+
+Notes:
+- Each sensor contributes 3 channels (x, y, z). For multiple sensors, set
+  `num_sensors` and stack channels accordingly:
+  `harbench.load_model("mtl", num_sensors=2)` expects `(N, 6, 150)` and
+  returns `(N, 1024)`.
+- `encode` accepts numpy arrays or torch tensors and returns the same type.
+  Use `encode(x, batch_size=256)` to process large inputs in chunks.
+- `harbench.available_models()` lists the models exposed through this API.
+
 ## Project Structure
 
 ```
