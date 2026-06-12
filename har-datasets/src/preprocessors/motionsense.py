@@ -199,7 +199,7 @@ class MotionSensePreprocessor(BasePreprocessor):
                 data: (num_samples, 6) - ACC(3) + GYRO(3)
                 labels: (num_samples,) - activity labels
         """
-        ms_dir = self.raw_data_path / 'motionsense'
+        ms_dir = self.raw_data_path / 'motionsense' / 'data'
         acc_dir = ms_dir / 'B_Accelerometer_data'
         gyro_dir = ms_dir / 'C_Gyroscope_data'
 

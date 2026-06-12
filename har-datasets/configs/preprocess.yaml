@@ -2,8 +2,10 @@
 
 # Global settings
 global:
-  raw_data_path: har-datasets/data/raw
-  processed_data_path: har-datasets/data/processed
+  # raw_data_path: har-datasets/data/raw
+  raw_data_path: C:\Users\chatc\Workarea\Dataset\All
+  # processed_data_path: har-datasets/data/processed
+  processed_data_path: C:\Users\chatc\Workarea\Dataset\All\processed_260612
   seed: 42
   window_size: 150        # 5 seconds @ 30Hz
   stride: 90              # 3 seconds @ 30Hz (40% overlap) - v1.0 compatible
@@ -13,7 +15,7 @@ datasets:
   # DSADS (Daily and Sports Activities Dataset)
   dsads:
     # Data path
-    raw_data_path: har-datasets/data/raw
+    raw_data_path: C:/Users/chatc/Workarea/Dataset/All
 
     # Sampling rate
     target_sampling_rate: 30  # Hz (resampled from original 25Hz)
@@ -40,7 +42,7 @@ datasets:
   # MHEALTH (Mobile Health) Dataset
   mhealth:
     # Data path
-    raw_data_path: har-datasets/data/raw
+    raw_data_path: C:/Users/chatc/Workarea/Dataset/All
 
     # Sampling rate
     target_sampling_rate: 30  # Hz (resampled from original 50Hz)
@@ -67,7 +69,7 @@ datasets:
   # OpenPack (Logistics Packaging Operations) Dataset
   openpack:
     # Data path
-    raw_data_path: har-datasets/data/raw
+    raw_data_path: C:/Users/chatc/Workarea/Dataset/All
 
     # Sampling rate
     target_sampling_rate: 30  # Hz (originally 30Hz, no resampling needed)
@@ -91,7 +93,7 @@ datasets:
   # NHANES PAX-G/PAX-H Dataset
   nhanes:
     # Data path
-    raw_data_path: har-datasets/data/raw
+    raw_data_path: C:/Users/chatc/Workarea/Dataset/All
 
     # Processing parameters
     window_size: 5        # Window size (seconds)
@@ -122,7 +124,7 @@ datasets:
   # FORTHTRACE (FORTH-TRACE) Dataset
   forthtrace:
     # Data path
-    raw_data_path: har-datasets/data/raw
+    raw_data_path: C:/Users/chatc/Workarea/Dataset/All
 
     # Sampling rate
     target_sampling_rate: 30  # Hz (resampled from original 51.2Hz)
@@ -142,7 +144,7 @@ datasets:
   # HAR70+ (Human Activity Recognition for Older Adults) Dataset
   har70plus:
     # Data path
-    raw_data_path: har-datasets/data/raw
+    raw_data_path: C:/Users/chatc/Workarea/Dataset/All
 
     # Sampling rate
     target_sampling_rate: 30  # Hz (resampled from original 50Hz)
@@ -162,7 +164,7 @@ datasets:
   # HARTH (Human Activity Recognition Trondheim) Dataset
   harth:
     # Data path
-    raw_data_path: har-datasets/data/raw
+    raw_data_path: C:/Users/chatc/Workarea/Dataset/All
 
     # Sampling rate
     target_sampling_rate: 30  # Hz (resampled from original 50Hz)
@@ -180,7 +182,6 @@ datasets:
     # sampling_rate is resampled to 30Hz
 
   realworld:
-    raw_data_path: har-datasets/data/raw
     target_sampling_rate: 30  # Hz (resampled from original 50Hz)
     window_size: 150      # 5 seconds @ 30Hz
     stride: 90            # 3 seconds @ 30Hz (40% overlap)
@@ -194,7 +195,7 @@ datasets:
   # LARa (Logistic Activity Recognition) Dataset
   lara:
     # Data path
-    raw_data_path: har-datasets/data/raw
+    raw_data_path: C:/Users/chatc/Workarea/Dataset/All
 
     # Sampling rate
     target_sampling_rate: 30  # Hz (resampled from original 100Hz)
@@ -214,7 +215,7 @@ datasets:
   # REALDISP (REAListic sensor DISPlacement) Activity Recognition Dataset
   realdisp:
     # Data path
-    raw_data_path: har-datasets/data/raw
+    raw_data_path: C:/Users/chatc/Workarea/Dataset/All
 
     # Sampling rate
     target_sampling_rate: 30  # Hz (resampled from estimated 50Hz)
@@ -234,7 +235,7 @@ datasets:
   # PAMAP2 (Physical Activity Monitoring) Dataset
   pamap2:
     # Data path
-    raw_data_path: har-datasets/data/raw
+    raw_data_path: C:/Users/chatc/Workarea/Dataset/All
 
     # Sampling rate
     target_sampling_rate: 30  # Hz (resampled from original 100Hz)
@@ -254,7 +255,7 @@ datasets:
   # MEx (Multi-modal Exercise) Dataset
   mex:
     # Data path
-    raw_data_path: har-datasets/data/raw
+    raw_data_path: C:/Users/chatc/Workarea/Dataset/All
 
     # Sampling rate
     target_sampling_rate: 30  # Hz (resampled from original 100Hz)
@@ -274,7 +275,7 @@ datasets:
   # OPPORTUNITY (OPPORTUNITY Activity Recognition) Dataset
   opportunity:
     # Data path
-    raw_data_path: har-datasets/data/raw
+    raw_data_path: C:/Users/chatc/Workarea/Dataset/All
 
     # Sampling rate
     target_sampling_rate: 30  # Hz (original data is also 30Hz, no resampling needed)
@@ -295,7 +296,6 @@ datasets:
     # No resampling needed
 
   hhar:
-    raw_data_path: har-datasets/data/raw
     target_sampling_rate: 30  # Hz (resampled from device-specific original rates)
     window_size: 150      # 5 seconds @ 30Hz
     stride: 90            # 3 seconds @ 30Hz (40% overlap)
@@ -310,7 +310,6 @@ datasets:
     original_sampling_rate: null  # Varies by device (50-200Hz)
 
   wisdm:
-    raw_data_path: har-datasets/data/raw
     target_sampling_rate: 30  # Hz (resampled from original 20Hz)
     window_size: 150      # 5 seconds @ 30Hz
     stride: 90            # 3 seconds @ 30Hz (40% overlap)
@@ -325,7 +324,7 @@ datasets:
   # WARD (Wearable Action Recognition Database) Dataset
   ward:
     # Data path
-    raw_data_path: har-datasets/data/raw
+    raw_data_path: C:/Users/chatc/Workarea/Dataset/All
 
     # Sampling rate
     target_sampling_rate: 30  # Hz (resampled from original 20Hz)
@@ -346,7 +345,7 @@ datasets:
   # CAPTURE-24 (Large-scale daily living HAR) Dataset
   capture24:
     # Data path
-    raw_data_path: har-datasets/data/raw
+    raw_data_path: C:/Users/chatc/Workarea/Dataset/All
 
     # Sampling rate
     target_sampling_rate: 30  # Hz (resampled from original 100Hz)
@@ -373,7 +372,7 @@ datasets:
   # IMSB (IM-SportingBehaviors) Dataset
   imsb:
     # Data path
-    raw_data_path: har-datasets/data/raw
+    raw_data_path: C:/Users/chatc/Workarea/Dataset/All
 
     # Sampling rate
     target_sampling_rate: 30  # Hz (resampled from original 20Hz)
@@ -394,7 +393,7 @@ datasets:
   # MotionSense Dataset
   motionsense:
     # Data path
-    raw_data_path: har-datasets/data/raw
+    raw_data_path: C:/Users/chatc/Workarea/Dataset/All
 
     # Sampling rate
     target_sampling_rate: 30  # Hz (resampled from original 50Hz)
@@ -416,7 +415,7 @@ datasets:
   # IM-WSHA (IM-Wearable Smart Home Activities) Dataset
   imwsha:
     # Data path
-    raw_data_path: har-datasets/data/raw
+    raw_data_path: C:/Users/chatc/Workarea/Dataset/All
 
     # Sampling rate
     target_sampling_rate: 30  # Hz (resampled from estimated 50Hz)
@@ -437,7 +436,7 @@ datasets:
   # SBRHAPT (Smartphone-Based Recognition of Human Activities and Postural Transitions) Dataset
   sbrhapt:
     # Data path
-    raw_data_path: har-datasets/data/raw
+    raw_data_path: C:/Users/chatc/Workarea/Dataset/All
 
     # Sampling rate
     target_sampling_rate: 30  # Hz (resampled from original 50Hz)
@@ -459,7 +458,7 @@ datasets:
   # CHAD (Complex Human Activities Dataset)
   chad:
     # Data path
-    raw_data_path: har-datasets/data/raw
+    raw_data_path: C:/Users/chatc/Workarea/Dataset/All
 
     # Sampling rate
     target_sampling_rate: 30  # Hz (resampled from estimated 50Hz)
@@ -480,7 +479,7 @@ datasets:
   # UCA-EHAR (Université Côte d'Azur - Embedded Human Activity Recognition) Dataset
   ucaehar:
     # Data path
-    raw_data_path: har-datasets/data/raw
+    raw_data_path: C:/Users/chatc/Workarea/Dataset/All
 
     # Sampling rate
     target_sampling_rate: 30  # Hz (resampled from original 25Hz)
@@ -501,7 +500,7 @@ datasets:
   # Daphnet Freezing of Gait Dataset
   dog:
     # Data path
-    raw_data_path: har-datasets/data/raw
+    raw_data_path: C:/Users/chatc/Workarea/Dataset/All
 
     # Sampling rate
     target_sampling_rate: 30  # Hz (resampled from original 64Hz)
@@ -522,7 +521,7 @@ datasets:
   # VTT-ConIot (Construction Worker HAR) Dataset
   vtt_coniot:
     # Data path
-    raw_data_path: har-datasets/data/raw
+    raw_data_path: C:/Users/chatc/Workarea/Dataset/All
 
     # Sampling rate
     target_sampling_rate: 30  # Hz (resampled from original 100Hz)
@@ -544,7 +543,7 @@ datasets:
   # PAAL (ADL Accelerometry Dataset)
   paal:
     # Data path
-    raw_data_path: har-datasets/data/raw
+    raw_data_path: C:/Users/chatc/Workarea/Dataset/All
 
     # Sampling rate
     target_sampling_rate: 30  # Hz (resampled from original 32Hz)
@@ -565,7 +564,7 @@ datasets:
   # KDDI Kitchen Smartwatch Dataset (Left arm)
   kddi_kitchen_left:
     # Data path
-    raw_data_path: har-datasets/data/raw
+    raw_data_path: C:/Users/chatc/Workarea/Dataset/All
 
     # Sampling rate
     target_sampling_rate: 30  # Hz (resampled from original 64Hz)
@@ -586,7 +585,7 @@ datasets:
   # KDDI Kitchen Smartwatch Dataset (Right arm)
   kddi_kitchen_right:
     # Data path
-    raw_data_path: har-datasets/data/raw
+    raw_data_path: C:/Users/chatc/Workarea/Dataset/All
 
     # Sampling rate
     target_sampling_rate: 30  # Hz (resampled from original 64Hz)
@@ -607,7 +606,7 @@ datasets:
   # TMD (Transportation Mode Detection) Dataset
   tmd:
     # Data path
-    raw_data_path: har-datasets/data/raw
+    raw_data_path: C:/Users/chatc/Workarea/Dataset/All
 
     # Sampling rate
     target_sampling_rate: 30  # Hz (resampled from various original rates)
@@ -626,7 +625,7 @@ datasets:
   # SelfBack Dataset
   selfback:
     # Data path
-    raw_data_path: har-datasets/data/raw
+    raw_data_path: C:/Users/chatc/Workarea/Dataset/All
 
     # Sampling rate
     target_sampling_rate: 30  # Hz (resampled from original 100Hz)
@@ -645,7 +644,7 @@ datasets:
   # USC-HAD (USC Human Activity Dataset)
   uschad:
     # Data path
-    raw_data_path: har-datasets/data/raw
+    raw_data_path: C:/Users/chatc/Workarea/Dataset/All
 
     # Sampling rate
     target_sampling_rate: 30  # Hz (resampled from original 100Hz)
@@ -664,7 +663,7 @@ datasets:
   # Exoskeletons Dataset
   exoskeletons:
     # Data path
-    raw_data_path: har-datasets/data/raw
+    raw_data_path: C:/Users/chatc/Workarea/Dataset/All
 
     # Sampling rate
     target_sampling_rate: 30  # Hz (resampled from original 100Hz)
@@ -683,7 +682,7 @@ datasets:
   # ADLRD (ADL Recognition Dataset) - UCI Dataset 283
   adlrd:
     # Data path
-    raw_data_path: har-datasets/data/raw
+    raw_data_path: C:/Users/chatc/Workarea/Dataset/All
 
     # Sampling rate
     target_sampling_rate: 30  # Hz (resampled from original 32Hz)

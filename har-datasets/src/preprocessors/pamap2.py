@@ -269,7 +269,7 @@ class PAMAP2Preprocessor(BasePreprocessor):
         subject_ids = [101, 102, 103, 104, 105, 106, 107, 108, 109]
 
         for idx, subject_id in enumerate(subject_ids, start=1):
-            subject_file = raw_path / f"subject{subject_id}.dat"
+            subject_file = raw_path / "Protocol" /f"subject{subject_id}.dat"
 
             if not subject_file.exists():
                 logger.warning(f"Subject file not found: {subject_file}")

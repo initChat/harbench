@@ -271,7 +271,8 @@ class OpportunityPreprocessor(BasePreprocessor):
                 data: Array of (num_samples, 113) (selected sensor columns)
                 labels: Array of (num_samples,)
         """
-        raw_path = self.raw_data_path / self.dataset_name
+        # raw_path = self.raw_data_path / self.dataset_name
+        raw_path = self.raw_data_path / self.dataset_name / "dataset"
 
         if not raw_path.exists():
             raise FileNotFoundError(

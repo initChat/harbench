@@ -153,7 +153,8 @@ class LaraPreprocessor(BasePreprocessor):
         logger.info(f"Loading LARA data from {self.raw_data_path}")
 
         # IMU data directory
-        imu_dir = self.raw_data_path / self.dataset_name / "IMU data"
+        # imu_dir = self.raw_data_path / self.dataset_name / "IMU data"
+        imu_dir = self.raw_data_path / self.dataset_name / "IMU_data_MbientLab"
         if not imu_dir.exists():
             raise FileNotFoundError(f"IMU data directory not found: {imu_dir}")
 
