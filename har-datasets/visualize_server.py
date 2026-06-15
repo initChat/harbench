@@ -36,7 +36,8 @@ from src.dataset_info import DATASETS
 app = Flask(__name__)
 
 # Global settings
-DATA_DIR = Path('data/processed')
+# DATA_DIR = Path('data/processed')
+DATA_DIR = Path('C:\\Users\\chatc\\Workarea\\Dataset\\All\\processed_260612')  # Update this path if needed
 
 # Helper function to get activity name from dataset name
 def get_activity_name(dataset_name: str, class_id: int) -> str:
