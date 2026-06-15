@@ -275,15 +275,17 @@ DATASETS = {
         },
     },
     "OPPORTUNITY": {
-        "sensor_list": ["BACK", "RUA", "RLA", "LUA", "LLA", "L_SHOE", "R_SHOE"],
+        "sensor_list": ["BACK", "RUA", "RLA", "LUA", "LLA", "L_SHOE", "R_SHOE", "R_WRIST", "R_KNEE"],
         "modalities": {
             "BACK": ["ACC", "GYRO", "MAG"],
             "RUA": ["ACC", "GYRO", "MAG"],
             "RLA": ["ACC", "GYRO", "MAG"],
             "LUA": ["ACC", "GYRO", "MAG"],
             "LLA": ["ACC", "GYRO", "MAG"],
-            "L_SHOE": ["ACC", "GYRO", "MAG"],
-            "R_SHOE": ["ACC", "GYRO", "MAG"],
+            "L_SHOE": ["ACC", "GYRO"],   # no magnetometer (InertiaCube3)
+            "R_SHOE": ["ACC", "GYRO"],   # no magnetometer (InertiaCube3)
+            "R_WRIST": ["ACC"],          # bluetooth accelerometer only
+            "R_KNEE": ["ACC"],           # bluetooth accelerometer only
         },
         "n_classes": 17,  # Number of valid mid-level gesture classes
         "sampling_rate": 30,  # Hz (already 30Hz, no resampling needed)
@@ -463,18 +465,23 @@ DATASETS = {
         "scale_factor": None,  # Already in G units
         "has_undefined_class": True,  # Some windows have NA annotations
         "labels": {
-            0: 'bicycling',
-            1: 'household-chores',
-            2: 'manual-work',
-            3: 'mixed-activity',
-            4: 'sitting',
-            5: 'sleep',
-            6: 'sports',
-            7: 'standing',
-            8: 'vehicle',
-            9: 'walking'
+            # 0: 'bicycling',
+            # 1: 'household-chores',
+            # 2: 'manual-work',
+            # 3: 'mixed-activity',
+            # 4: 'sitting',
+            # 5: 'sleep',
+            # 6: 'sports',
+            # 7: 'standing',
+            # 8: 'vehicle',
+            # 9: 'walking'
+            0: 'sleep',
+            1: 'sedentary',
+            2: 'light activity',
+            3: 'moderate-to-vigorous',
         },
-        "notes": "Large-scale daily living dataset (151 participants, ~4000 hours). Using WillettsSpecific2018 schema."
+        # "notes": "Large-scale daily living dataset (151 participants, ~4000 hours). Using WillettsSpecific2018 schema."
+        "notes": "Large-scale daily living dataset (151 participants, ~4000 hours). Using Walmsley2020 schema."
     },
     "IMSB": {
         "sensor_list": ["Wrist", "Neck"],  # Thigh excluded due to high missing values

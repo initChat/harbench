@@ -281,8 +281,8 @@ datasets:
     target_sampling_rate: 30  # Hz (original data is also 30Hz, no resampling needed)
 
     # Window parameters
-    window_size: 150      # 5 seconds @ 30Hz
-    stride: 90            # 3 seconds @ 30Hz (40% overlap)
+    window_size: 30       # 1 second @ 30Hz (short gestures require small windows)
+    stride: 15            # 0.5 second @ 30Hz (50% overlap)
 
     # Scenarios to process (multiple can be specified)
     scenarios: ['ideal']  # Choose from: ideal, self, mutual

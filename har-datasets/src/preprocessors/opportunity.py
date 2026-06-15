@@ -37,22 +37,55 @@ logger = logging.getLogger(__name__)
 OPPORTUNITY_URL = "https://archive.ics.uci.edu/static/public/226/opportunity+activity+recognition.zip"
 
 
-# Select 113 sensor channels (based on DeepConvLSTM implementation)
-# Column 0 of original data is timestamp, columns 1-133 are body-worn sensors, columns 134-242 are object/ambient sensors
-# Column 243 is mid-level gesture label, column 244 is locomotion label
+# Select 113 sensor channels + 2 label columns from the 250-column raw data.
+# Raw layout (0-indexed):
+#   0         : timestamp (MILLISEC)
+#   1-36      : 12 bluetooth ACC-only sensors (RKN^, HIP, LUA^, RUA_, LH, BACK_bt,
+#               RKN_, RWR, RUA^, LUA_, LWR, RH) — 3 ch each
+#   37-45     : IMU BACK (ACC[37-39], GYRO[40-42], MAG[43-45])
+#   46-49     : IMU BACK QUAT  → removed
+#   50-58     : IMU RUA  (ACC[50-52], GYRO[53-55], MAG[56-58])
+#   59-62     : IMU RUA  QUAT  → removed
+#   63-71     : IMU RLA  (ACC[63-65], GYRO[66-68], MAG[69-71])
+#   72-75     : IMU RLA  QUAT  → removed
+#   76-84     : IMU LUA  (ACC[76-78], GYRO[79-81], MAG[82-84])
+#   85-88     : IMU LUA  QUAT  → removed
+#   89-97     : IMU LLA  (ACC[89-91], GYRO[92-94], MAG[95-97])
+#   98-101    : IMU LLA  QUAT  → removed
+#   102-117   : L-SHOE 16 ch (Euler[102-104], Nav_Acc[105-107], Body_Acc[108-110],
+#               AngVelBody[111-113], AngVelNav[114-116], Compass[117])
+#   118-133   : R-SHOE 16 ch (same structure)
+#   134-242   : object/ambient/location sensors → removed
+#   243       : Locomotion label → removed
+#   244       : HL_Activity label → removed
+#   245       : LL_Left_Arm label → removed
+#   246       : LL_Left_Arm_Object label → removed
+#   247       : LL_Right_Arm label → removed
+#   248       : LL_Right_Arm_Object label → removed
+#   249       : ML_Both_Arms label (mid-level gestures) ← kept
+#
+# After deletion selected_data has 116 columns (0-indexed 0-115):
+#   0         : timestamp
+#   1-36      : bluetooth ACC sensors (sensor_data indices 0-35)
+#   37-45     : IMU BACK without QUAT (sensor_data 36-44)
+#   46-54     : IMU RUA  without QUAT (sensor_data 45-53)
+#   55-63     : IMU RLA  without QUAT (sensor_data 54-62)
+#   64-72     : IMU LUA  without QUAT (sensor_data 63-71)
+#   73-81     : IMU LLA  without QUAT (sensor_data 72-80)
+#   82-97     : L-SHOE 16 ch          (sensor_data 81-96)
+#   98-113    : R-SHOE 16 ch          (sensor_data 97-112)
+#   114       : Locomotion label
+#   115       : ML_Both_Arms label    ← LABEL_COLUMN
 def select_columns_opp(data):
     """
-    Select 113 columns used in OPPORTUNITY challenge
-
-    - Columns 46-49, 59-62, 72-75, 85-88, 98-101: IMU Quaternions (removed)
-    - Columns 134-242: Object/ambient sensors (removed)
-    - Columns 244-248: Others (removed)
+    Remove IMU quaternions, object/ambient sensors, and unused label columns.
+    Keeps 113 sensor channels (selected_data[:,1:114]) + ML_Both_Arms label (selected_data[:,115]).
 
     Args:
-        data: Original data matrix (samples, 249)
+        data: Original data matrix (samples, 250)
 
     Returns:
-        Selected 113 columns of sensor data (samples, 113)
+        selected_data: (samples, 116)
     """
     features_delete = np.arange(46, 50)
     features_delete = np.concatenate([features_delete, np.arange(59, 63)])
@@ -64,73 +97,103 @@ def select_columns_opp(data):
     return np.delete(data, features_delete, 1)
 
 
-# Sensor channel group definitions (113 channels)
-# Each IMU has 17 channels - 4 channels (QUAT) = 13 channels
-# Column numbers are 0-indexed after selection
+# Sensor channel indices in sensor_data = selected_data[:, 1:114]  (0-indexed)
+#
+# Bluetooth ACC-only sensors (no GYRO/MAG):
+#   RKN^  (Right Knee upper) : 0-2
+#   HIP                      : 3-5
+#   LUA^  (bluetooth)        : 6-8
+#   RUA_  (bluetooth)        : 9-11
+#   LH    (Left Hand)        : 12-14
+#   BACK  (bluetooth)        : 15-17
+#   RKN_  (Right Knee lower) : 18-20
+#   RWR   (Right Wrist)      : 21-23
+#   RUA^  (bluetooth)        : 24-26
+#   LUA_  (bluetooth)        : 27-29
+#   LWR   (Left Wrist)       : 30-32
+#   RH    (Right Hand)       : 33-35
+#
+# IMU sensors (ACC + GYRO + MAG):
+#   BACK : ACC[36-38]  GYRO[39-41]  MAG[42-44]
+#   RUA  : ACC[45-47]  GYRO[48-50]  MAG[51-53]
+#   RLA  : ACC[54-56]  GYRO[57-59]  MAG[60-62]
+#   LUA  : ACC[63-65]  GYRO[66-68]  MAG[69-71]
+#   LLA  : ACC[72-74]  GYRO[75-77]  MAG[78-80]
+#
+# Shoe sensors (no magnetometer; Body_Acc + AngVelBody used):
+#   L_SHOE: Body_Acc[84-86]  AngVelBody[90-92]   (full 16-ch block: 81-96)
+#   R_SHOE: Body_Acc[100-102] AngVelBody[106-108] (full 16-ch block: 97-112)
 SENSOR_GROUPS = {
     'BACK': {
-        'channels': list(range(0, 13)),  # 13 channels
+        'channels': list(range(36, 45)),
         'modalities': {
-            'ACC': list(range(0, 3)),    # Accelerometer X, Y, Z
-            'GYRO': list(range(3, 6)),   # Gyroscope X, Y, Z
-            'MAG': list(range(6, 9)),    # Magnetometer X, Y, Z
+            'ACC': list(range(36, 39)),
+            'GYRO': list(range(39, 42)),
+            'MAG': list(range(42, 45)),
         }
     },
-    'RUA': {  # Right Upper Arm
-        'channels': list(range(13, 26)),
+    'RUA': {  # Right Upper Arm IMU
+        'channels': list(range(45, 54)),
         'modalities': {
-            'ACC': list(range(13, 16)),
-            'GYRO': list(range(16, 19)),
-            'MAG': list(range(19, 22)),
+            'ACC': list(range(45, 48)),
+            'GYRO': list(range(48, 51)),
+            'MAG': list(range(51, 54)),
         }
     },
-    'RLA': {  # Right Lower Arm
-        'channels': list(range(26, 39)),
+    'RLA': {  # Right Lower Arm IMU
+        'channels': list(range(54, 63)),
         'modalities': {
-            'ACC': list(range(26, 29)),
-            'GYRO': list(range(29, 32)),
-            'MAG': list(range(32, 35)),
+            'ACC': list(range(54, 57)),
+            'GYRO': list(range(57, 60)),
+            'MAG': list(range(60, 63)),
         }
     },
-    'LUA': {  # Left Upper Arm
-        'channels': list(range(39, 52)),
+    'LUA': {  # Left Upper Arm IMU
+        'channels': list(range(63, 72)),
         'modalities': {
-            'ACC': list(range(39, 42)),
-            'GYRO': list(range(42, 45)),
-            'MAG': list(range(45, 48)),
+            'ACC': list(range(63, 66)),
+            'GYRO': list(range(66, 69)),
+            'MAG': list(range(69, 72)),
         }
     },
-    'LLA': {  # Left Lower Arm
-        'channels': list(range(52, 65)),
+    'LLA': {  # Left Lower Arm IMU
+        'channels': list(range(72, 81)),
         'modalities': {
-            'ACC': list(range(52, 55)),
-            'GYRO': list(range(55, 58)),
-            'MAG': list(range(58, 61)),
+            'ACC': list(range(72, 75)),
+            'GYRO': list(range(75, 78)),
+            'MAG': list(range(78, 81)),
         }
     },
-    'L_SHOE': {  # Left Shoe
-        'channels': list(range(65, 78)),
+    'L_SHOE': {  # Left Shoe (InertiaCube3) — no magnetometer
+        'channels': list(range(81, 97)),
         'modalities': {
-            'ACC': list(range(65, 68)),
-            'GYRO': list(range(68, 71)),
-            'MAG': list(range(71, 74)),
+            'ACC': list(range(84, 87)),   # Body_Acc XYZ
+            'GYRO': list(range(90, 93)),  # AngVelBody XYZ
         }
     },
-    'R_SHOE': {  # Right Shoe
-        'channels': list(range(78, 91)),
+    'R_SHOE': {  # Right Shoe (InertiaCube3) — no magnetometer
+        'channels': list(range(97, 113)),
         'modalities': {
-            'ACC': list(range(78, 81)),
-            'GYRO': list(range(81, 84)),
-            'MAG': list(range(84, 87)),
+            'ACC': list(range(100, 103)),  # Body_Acc XYZ
+            'GYRO': list(range(106, 109)), # AngVelBody XYZ
         }
     },
-    # Note: Remaining 22 channels (91-112) are additional accelerometer sensors
-    # (HIP, RKN, LKN, etc.) but excluded for consistency with other datasets
-    # Each sensor group should have 3 channels (X, Y, Z) per modality
+    'R_WRIST': {  # Right Wrist bluetooth accelerometer (ACC only)
+        'channels': list(range(21, 24)),
+        'modalities': {
+            'ACC': list(range(21, 24)),
+        }
+    },
+    'R_KNEE': {  # Right Knee (RKN^) bluetooth accelerometer (ACC only)
+        'channels': list(range(0, 3)),
+        'modalities': {
+            'ACC': list(range(0, 3)),
+        }
+    },
 }
 
-# Label column (mid-level gestures)
-LABEL_COLUMN = 243  # Column number in original data
+# Label column index in selected_data (ML_Both_Arms = mid-level gestures)
+LABEL_COLUMN = 115
 
 
 @register_preprocessor('opportunity')
@@ -156,8 +219,8 @@ class OpportunityPreprocessor(BasePreprocessor):
         self.sensor_names = list(SENSOR_GROUPS.keys())
 
         # Preprocessing parameters
-        self.window_size = config.get('window_size', 150)  # 5 seconds @ 30Hz
-        self.stride = config.get('stride', 30)  # 1 second @ 30Hz
+        self.window_size = config.get('window_size', 30)  # 1 second @ 30Hz
+        self.stride = config.get('stride', 15)  # 0.5 second @ 30Hz (50% overlap)
 
         # Scaling factor (m/s^2 -> G conversion)
         self.scale_factor = DATASETS.get('OPPORTUNITY', {}).get('scale_factor', None)
@@ -315,11 +378,11 @@ class OpportunityPreprocessor(BasePreprocessor):
                     # Column selection (extract 113 channels)
                     selected_data = select_columns_opp(data)
 
-                    # Extract labels (mid-level gestures: column 113 after selection, originally column 243)
-                    # select_columns_opp keeps column 0, columns 1-113 are sensors, column 114 is label
-                    labels = selected_data[:, 113].astype(np.int32)
+                    # ML_Both_Arms (mid-level gesture) is at selected_data[:,115]
+                    # selected_data[:,114] is Locomotion — do not use
+                    labels = selected_data[:, 115].astype(np.int32)
 
-                    # Extract sensor data only (columns 1-113)
+                    # Sensor data: 113 channels (columns 1-113 of selected_data)
                     sensor_data = selected_data[:, 1:114]
 
                     # Label conversion: 0 -> -1 (Null class), others adjusted
