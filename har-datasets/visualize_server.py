@@ -32,6 +32,7 @@ except ImportError:
 # Dataset info import
 sys.path.insert(0, str(Path(__file__).parent))
 from src.dataset_info import DATASETS
+from src.dataset_taxonomy import filter_by_activity, get_dataset_groups
 
 app = Flask(__name__)
 
@@ -584,6 +585,110 @@ NEW_UI_TEMPLATE = """
             flex-direction: column;
         }
 
+        /* Activity search */
+        .search-bar {
+            display: flex;
+            gap: 6px;
+            margin-top: 10px;
+        }
+        .search-bar input {
+            flex: 1;
+            padding: 6px 8px;
+            border: 1px solid rgba(255,255,255,0.3);
+            border-radius: 4px;
+            font-size: 12px;
+            background: rgba(255,255,255,0.15);
+            color: white;
+            outline: none;
+        }
+        .search-bar input::placeholder { color: rgba(255,255,255,0.6); }
+        .search-bar input:focus { border-color: rgba(255,255,255,0.7); background: rgba(255,255,255,0.25); }
+        .search-bar button {
+            padding: 6px 10px;
+            background: rgba(255,255,255,0.2);
+            border: 1px solid rgba(255,255,255,0.3);
+            border-radius: 4px;
+            color: white;
+            font-size: 12px;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+        .search-bar button:hover { background: rgba(255,255,255,0.35); }
+        .search-results {
+            flex-shrink: 0;
+            overflow-y: auto;
+            max-height: 40%;
+            border-bottom: 1px solid #e0e0e0;
+            background: #fafcff;
+        }
+        .search-results-header {
+            padding: 8px 12px;
+            font-size: 11px;
+            font-weight: 600;
+            color: #5f6368;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            background: #f1f3f4;
+            border-bottom: 1px solid #e0e0e0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .search-clear {
+            font-size: 11px;
+            color: #1a73e8;
+            cursor: pointer;
+            font-weight: 500;
+            text-transform: none;
+            letter-spacing: 0;
+        }
+        .search-clear:hover { text-decoration: underline; }
+        .search-result-item {
+            padding: 8px 12px;
+            border-bottom: 1px solid #f0f0f0;
+        }
+        .search-result-dataset {
+            font-size: 12px;
+            font-weight: 600;
+            color: #202124;
+            margin-bottom: 4px;
+        }
+        .search-result-class-row {
+            display: flex;
+            align-items: flex-start;
+            gap: 6px;
+            margin-top: 4px;
+        }
+        .search-result-class-label {
+            font-size: 11px;
+            color: #5f6368;
+            white-space: nowrap;
+            padding-top: 3px;
+            min-width: 60px;
+        }
+        .search-result-positions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+        }
+        .search-pos-btn {
+            background: #e8f0fe;
+            color: #1967d2;
+            border: none;
+            padding: 3px 8px;
+            border-radius: 10px;
+            font-size: 11px;
+            cursor: pointer;
+            font-weight: 500;
+        }
+        .search-pos-btn:hover { background: #d2e3fc; }
+        .search-no-results {
+            padding: 16px 12px;
+            font-size: 12px;
+            color: #5f6368;
+            text-align: center;
+        }
+
         /* Responsive design */
         @media (max-width: 1200px) {
             .sidebar {
@@ -665,7 +770,12 @@ NEW_UI_TEMPLATE = """
             <div class="sidebar">
                 <div class="sidebar-header">
                     <h1>HAR Datasets</h1>
+                    <div class="search-bar">
+                        <input type="text" id="activitySearch" placeholder="Search activity..." onkeydown="if(event.key==='Enter')searchActivity()">
+                        <button onclick="searchActivity()">Search</button>
+                    </div>
                 </div>
+                <div class="search-results" id="searchResults" style="display:none;"></div>
                 <div class="tree-container" id="treeContainer">
                     <div class="loading">Loading...</div>
                 </div>
@@ -1215,6 +1325,69 @@ NEW_UI_TEMPLATE = """
             globalSamplingMode = document.getElementById('samplingMode').value;
             // Re-render all panels
             renderPanels();
+        }
+
+        // Activity search
+        async function searchActivity() {
+            const query = document.getElementById('activitySearch').value.trim();
+            const resultsDiv = document.getElementById('searchResults');
+            if (!query) {
+                resultsDiv.style.display = 'none';
+                return;
+            }
+
+            resultsDiv.style.display = 'block';
+            resultsDiv.innerHTML = '<div class="search-no-results">Searching...</div>';
+
+            try {
+                const response = await fetch('/api/search?activity=' + encodeURIComponent(query));
+                const results = await response.json();
+
+                if (results.error) {
+                    resultsDiv.innerHTML = `<div class="search-no-results">Error: ${results.error}</div>`;
+                    return;
+                }
+
+                if (results.length === 0) {
+                    resultsDiv.innerHTML = `<div class="search-no-results">No datasets found for "<strong>${query}</strong>"</div>`;
+                    return;
+                }
+
+                const groupsMatched = results.map(r => r.matched_groups || []).flat();
+                const uniqueGroups = [...new Set(groupsMatched)];
+                const groupLabel = uniqueGroups.length > 0 ? uniqueGroups.join(', ') : query;
+                let html = `<div class="search-results-header">
+                    <span>${results.length} dataset${results.length > 1 ? 's' : ''} — ${groupLabel}</span>
+                    <span class="search-clear" onclick="clearSearch()">Clear</span>
+                </div>`;
+
+                results.forEach(r => {
+                    html += `<div class="search-result-item">
+                        <div class="search-result-dataset">${r.dataset}</div>`;
+                    r.class_ids.forEach((cid, i) => {
+                        const name = r.class_names[i];
+                        html += `<div class="search-result-class-row">
+                            <span class="search-result-class-label">${name}</span>
+                            <div class="search-result-positions">`;
+                        (r.positions || []).forEach(p => {
+                            html += `<button class="search-pos-btn"
+                                onclick="addPanel('${p.source}', event, ${cid})"
+                                title="${p.source}">${p.position}</button>`;
+                        });
+                        html += `</div></div>`;
+                    });
+                    html += `</div>`;
+                });
+
+                resultsDiv.innerHTML = html;
+            } catch (error) {
+                resultsDiv.innerHTML = '<div class="search-no-results">Search failed</div>';
+            }
+        }
+
+        function clearSearch() {
+            document.getElementById('activitySearch').value = '';
+            document.getElementById('searchResults').style.display = 'none';
         }
 
         // Initialize
@@ -2092,6 +2265,84 @@ def api_panel_data():
         'metadata': metadata,
         'samples': sampled_data
     })
+
+
+@app.route('/api/search')
+def api_search():
+    """Search datasets by canonical activity group name."""
+    activity = request.args.get('activity', '').strip()
+    if not activity:
+        return jsonify([])
+
+    if not DATA_DIR.exists():
+        return jsonify([])
+
+    # Match against canonical group names: exact first, then prefix, then substring
+    from src.dataset_taxonomy import ACTIVITY_TAXONOMY
+    activity_lower = activity.lower()
+    all_groups = list(ACTIVITY_TAXONOMY.keys())
+    if activity_lower in all_groups:
+        matched_groups = [activity_lower]
+    else:
+        matched_groups = [g for g in all_groups if g.startswith(activity_lower)]
+        if not matched_groups:
+            matched_groups = [g for g in all_groups if activity_lower in g]
+
+    # Union of all datasets across matched groups
+    matching_key_set = set()
+    for group in matched_groups:
+        matching_key_set.update(filter_by_activity(group))
+    matching_keys = sorted(matching_key_set)
+    results = []
+
+    for ds_key in matching_keys:
+        # Find actual folder on disk (case-insensitive match)
+        ds_path = None
+        actual_name = None
+        for p in DATA_DIR.iterdir():
+            if p.is_dir() and p.name.upper() == ds_key.upper():
+                ds_path = p
+                actual_name = p.name
+                break
+        if ds_path is None:
+            continue
+
+        # Resolve matching raw labels → class IDs across all matched groups
+        groups = get_dataset_groups(ds_key)
+        raw_labels = set()
+        for group in matched_groups:
+            raw_labels.update(groups.get(group, []))
+        labels_dict = DATASETS[ds_key]['labels']
+        class_ids = [idx for idx, lbl in labels_dict.items() if lbl in raw_labels and idx >= 0]
+        if not class_ids:
+            continue
+
+        # Find all available positions in filesystem, group into one entry per dataset
+        y_files = sorted(ds_path.glob('USER*/*/*/Y.npy'))
+        if not y_files:
+            continue
+
+        # Group by position: pick first user/modality available for each position
+        seen_positions = {}
+        for yf in y_files:
+            parts = yf.parts
+            position = parts[-3]
+            if position not in seen_positions:
+                seen_positions[position] = (parts[-4], parts[-2])  # user_name, modality
+
+        positions = [
+            {'position': pos, 'source': f'{actual_name}/{user}/{pos}/{mod}'}
+            for pos, (user, mod) in sorted(seen_positions.items())
+        ]
+        results.append({
+            'dataset': actual_name,
+            'class_ids': class_ids,
+            'class_names': [labels_dict.get(cid, f'Class {cid}') for cid in class_ids],
+            'matched_groups': matched_groups,
+            'positions': positions,
+        })
+
+    return jsonify(results)
 
 
 @app.route('/old')
