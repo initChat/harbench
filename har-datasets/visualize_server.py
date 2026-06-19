@@ -653,20 +653,22 @@ NEW_UI_TEMPLATE = """
             color: #202124;
             margin-bottom: 4px;
         }
-        .search-result-class-row {
+        .search-result-class-block {
+            margin-top: 6px;
+        }
+        .search-result-class-info {
             display: flex;
-            align-items: flex-start;
-            gap: 6px;
-            margin-top: 4px;
+            align-items: baseline;
+            gap: 8px;
+            margin-bottom: 3px;
         }
         .search-result-class-label {
-            font-size: 11px;
-            color: #5f6368;
-            white-space: nowrap;
-            padding-top: 3px;
-            min-width: 60px;
+            font-size: 12px;
+            color: #202124;
+            font-weight: 500;
         }
         .search-result-positions {
+            padding-left: 8px;
             display: flex;
             flex-wrap: wrap;
             gap: 4px;
@@ -682,6 +684,14 @@ NEW_UI_TEMPLATE = """
             font-weight: 500;
         }
         .search-pos-btn:hover { background: #d2e3fc; }
+        .user-badge {
+            font-size: 11px;
+            color: #5f6368;
+            white-space: nowrap;
+            cursor: default;
+            flex-shrink: 0;
+        }
+        .user-badge.all { color: #137333; }
         .search-no-results {
             padding: 16px 12px;
             font-size: 12px;
@@ -1366,8 +1376,18 @@ NEW_UI_TEMPLATE = """
                         <div class="search-result-dataset">${r.dataset}</div>`;
                     r.class_ids.forEach((cid, i) => {
                         const name = r.class_names[i];
-                        html += `<div class="search-result-class-row">
-                            <span class="search-result-class-label">${name}</span>
+                        const users = (r.users_by_class || {})[String(cid)] || [];
+                        const total = r.total_users || 0;
+                        const isAll = users.length === total && total > 0;
+                        const shortIds = users.map(u => u.replace(/^USER0*/, 'u'));
+                        const badgeLabel = total === 0 ? '' : isAll ? 'All users' : `${users.length}/${total} users`;
+                        const badgeClass = isAll ? 'user-badge all' : 'user-badge';
+                        const tooltip = users.length > 0 ? shortIds.join(', ') : '';
+                        html += `<div class="search-result-class-block">
+                            <div class="search-result-class-info">
+                                <span class="search-result-class-label">${name}</span>
+                                ${badgeLabel ? `<span class="${badgeClass}" title="${tooltip}">${badgeLabel}</span>` : ''}
+                            </div>
                             <div class="search-result-positions">`;
                         (r.positions || []).forEach(p => {
                             html += `<button class="search-pos-btn"
@@ -2322,14 +2342,31 @@ def api_search():
         if not y_files:
             continue
 
-        # Group by position: pick first user/modality available for each position
+        # Group by position and collect per-class user coverage
         seen_positions = {}
+        all_users = set()
+        users_by_class = {cid: set() for cid in class_ids}
+
         for yf in y_files:
             parts = yf.parts
+            user_name = parts[-4]
             position = parts[-3]
+            modality = parts[-2]
             if position not in seen_positions:
-                seen_positions[position] = (parts[-4], parts[-2])  # user_name, modality
+                seen_positions[position] = (user_name, modality)
+            all_users.add(user_name)
+            # Check which matching classes this user has (load once per file)
+            try:
+                Y = np.load(yf)
+                if Y.ndim == 1:
+                    present = set(int(c) for c in np.unique(Y))
+                    for cid in class_ids:
+                        if cid in present:
+                            users_by_class[cid].add(user_name)
+            except Exception:
+                pass
 
+        total_users = len(all_users)
         positions = [
             {'position': pos, 'source': f'{actual_name}/{user}/{pos}/{mod}'}
             for pos, (user, mod) in sorted(seen_positions.items())
@@ -2340,6 +2377,8 @@ def api_search():
             'class_names': [labels_dict.get(cid, f'Class {cid}') for cid in class_ids],
             'matched_groups': matched_groups,
             'positions': positions,
+            'total_users': total_users,
+            'users_by_class': {str(cid): sorted(users_by_class[cid]) for cid in class_ids},
         })
 
     return jsonify(results)
