@@ -11,7 +11,6 @@ HARTH Dataset:
 
 import numpy as np
 import pandas as pd
-from pathlib import Path
 from typing import Dict, Any, Tuple
 import logging
 
@@ -25,7 +24,6 @@ from .utils import (
 from .common import (
     download_file,
     extract_archive,
-    check_dataset_exists
 )
 from . import register_preprocessor
 from ..dataset_info import DATASETS

@@ -11,23 +11,19 @@ LARa Dataset:
 
 import numpy as np
 import pandas as pd
-from pathlib import Path
-from typing import Dict, Any, Tuple
+from typing import Dict, Any
 import logging
 import json
 
 from .base import BasePreprocessor
 from .utils import (
-    create_sliding_windows,
     create_sliding_windows_multi_session,
-    filter_invalid_samples,
     resample_timeseries,
-    get_class_distribution
+    get_class_distribution,
 )
 from .common import (
     download_file,
     extract_archive,
-    check_dataset_exists
 )
 from . import register_preprocessor
 from ..dataset_info import DATASETS

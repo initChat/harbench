@@ -11,17 +11,16 @@ ADLRD Dataset:
 
 import numpy as np
 from pathlib import Path
-from typing import Dict, Any, Tuple
+from typing import Dict, Any
 import logging
 import shutil
 
 from .base import BasePreprocessor
 from .utils import (
-    create_sliding_windows,
     create_sliding_windows_multi_session,
     filter_invalid_samples,
     resample_timeseries,
-    get_class_distribution
+    get_class_distribution,
 )
 from .common import (
     download_file,

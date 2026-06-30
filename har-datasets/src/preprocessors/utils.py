@@ -3,8 +3,7 @@ Common utility functions for preprocessing
 """
 
 import numpy as np
-from pathlib import Path
-from typing import Tuple, Optional
+from typing import Tuple
 import logging
 from scipy import signal
 
@@ -236,45 +235,6 @@ def create_sliding_windows_multi_session(
     return np.concatenate(all_windows, axis=0), np.concatenate(all_labels, axis=0)
 
 
-def normalize_data(
-    data: np.ndarray,
-    method: str = 'standardize',
-    axis: Optional[int] = None,
-    epsilon: float = 1e-8
-) -> np.ndarray:
-    """
-    Normalize data
-
-    Args:
-        data: Input data
-        method: Normalization method ('standardize', 'minmax', 'normalize')
-        axis: Axis to apply normalization (None for entire array)
-        epsilon: Small value to prevent division by zero
-
-    Returns:
-        Normalized data
-    """
-    if method == 'standardize':
-        # Standardization (mean=0, std=1)
-        mean = np.mean(data, axis=axis, keepdims=True)
-        std = np.std(data, axis=axis, keepdims=True)
-        return (data - mean) / (std + epsilon)
-
-    elif method == 'minmax':
-        # Min-Max normalization [0, 1]
-        min_val = np.min(data, axis=axis, keepdims=True)
-        max_val = np.max(data, axis=axis, keepdims=True)
-        return (data - min_val) / (max_val - min_val + epsilon)
-
-    elif method == 'normalize':
-        # L2 normalization
-        norm = np.linalg.norm(data, axis=axis, keepdims=True)
-        return data / (norm + epsilon)
-
-    else:
-        raise ValueError(f"Unknown normalization method: {method}")
-
-
 def filter_invalid_samples(
     data: np.ndarray,
     labels: np.ndarray,
@@ -307,93 +267,6 @@ def filter_invalid_samples(
         logger.warning(f"Removed {removed_count} invalid samples")
 
     return filtered_data, filtered_labels
-
-
-def split_train_val_test(
-    data: np.ndarray,
-    labels: np.ndarray,
-    train_ratio: float = 0.7,
-    val_ratio: float = 0.15,
-    test_ratio: float = 0.15,
-    shuffle: bool = True,
-    seed: int = 42
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Split data into train/val/test sets
-
-    Args:
-        data: Input data
-        labels: Labels
-        train_ratio: Training data ratio
-        val_ratio: Validation data ratio
-        test_ratio: Test data ratio
-        shuffle: Whether to shuffle
-        seed: Random seed
-
-    Returns:
-        train_data, train_labels, val_data, val_labels, test_data, test_labels
-    """
-    assert abs(train_ratio + val_ratio + test_ratio - 1.0) < 1e-6, \
-        "Ratios must sum to 1.0"
-
-    num_samples = len(data)
-    indices = np.arange(num_samples)
-
-    if shuffle:
-        rng = np.random.RandomState(seed)
-        rng.shuffle(indices)
-
-    train_end = int(num_samples * train_ratio)
-    val_end = train_end + int(num_samples * val_ratio)
-
-    train_indices = indices[:train_end]
-    val_indices = indices[train_end:val_end]
-    test_indices = indices[val_end:]
-
-    return (
-        data[train_indices], labels[train_indices],
-        data[val_indices], labels[val_indices],
-        data[test_indices], labels[test_indices]
-    )
-
-
-def save_npy_dataset(
-    output_path: Path,
-    train_data: np.ndarray,
-    train_labels: np.ndarray,
-    val_data: Optional[np.ndarray] = None,
-    val_labels: Optional[np.ndarray] = None,
-    test_data: Optional[np.ndarray] = None,
-    test_labels: Optional[np.ndarray] = None
-) -> None:
-    """
-    Save processed data in NumPy format
-
-    Args:
-        output_path: Output directory
-        train_data, train_labels: Training data
-        val_data, val_labels: Validation data (optional)
-        test_data, test_labels: Test data (optional)
-    """
-    output_path = Path(output_path)
-    output_path.mkdir(parents=True, exist_ok=True)
-
-    # Training data
-    np.save(output_path / 'train_data.npy', train_data)
-    np.save(output_path / 'train_labels.npy', train_labels)
-    logger.info(f"Saved train data: {train_data.shape}")
-
-    # Validation data
-    if val_data is not None and val_labels is not None:
-        np.save(output_path / 'val_data.npy', val_data)
-        np.save(output_path / 'val_labels.npy', val_labels)
-        logger.info(f"Saved val data: {val_data.shape}")
-
-    # Test data
-    if test_data is not None and test_labels is not None:
-        np.save(output_path / 'test_data.npy', test_data)
-        np.save(output_path / 'test_labels.npy', test_labels)
-        logger.info(f"Saved test data: {test_data.shape}")
 
 
 def get_class_distribution(labels: np.ndarray) -> dict:
