@@ -16,7 +16,6 @@ MUM 2017, Stuttgart, Germany
 """
 
 import numpy as np
-from pathlib import Path
 from typing import Dict, Any, Tuple
 import logging
 import json

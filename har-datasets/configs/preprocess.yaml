@@ -4,7 +4,6 @@
 global:
   raw_data_path: har-datasets/data/raw
   processed_data_path: har-datasets/data/processed
-  seed: 42
   window_size: 150        # 5 seconds @ 30Hz
   stride: 90              # 3 seconds @ 30Hz (40% overlap) - v1.0 compatible
 
