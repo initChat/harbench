@@ -19,7 +19,6 @@ from .utils import (
     create_sliding_windows,
     create_sliding_windows_multi_session,
     filter_invalid_samples,
-    split_train_val_test,
     save_npy_dataset,
     get_class_distribution,
     resample_timeseries

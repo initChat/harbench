@@ -309,54 +309,6 @@ def filter_invalid_samples(
     return filtered_data, filtered_labels
 
 
-def split_train_val_test(
-    data: np.ndarray,
-    labels: np.ndarray,
-    train_ratio: float = 0.7,
-    val_ratio: float = 0.15,
-    test_ratio: float = 0.15,
-    shuffle: bool = True,
-    seed: int = 42
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Split data into train/val/test sets
-
-    Args:
-        data: Input data
-        labels: Labels
-        train_ratio: Training data ratio
-        val_ratio: Validation data ratio
-        test_ratio: Test data ratio
-        shuffle: Whether to shuffle
-        seed: Random seed
-
-    Returns:
-        train_data, train_labels, val_data, val_labels, test_data, test_labels
-    """
-    assert abs(train_ratio + val_ratio + test_ratio - 1.0) < 1e-6, \
-        "Ratios must sum to 1.0"
-
-    num_samples = len(data)
-    indices = np.arange(num_samples)
-
-    if shuffle:
-        rng = np.random.RandomState(seed)
-        rng.shuffle(indices)
-
-    train_end = int(num_samples * train_ratio)
-    val_end = train_end + int(num_samples * val_ratio)
-
-    train_indices = indices[:train_end]
-    val_indices = indices[train_end:val_end]
-    test_indices = indices[val_end:]
-
-    return (
-        data[train_indices], labels[train_indices],
-        data[val_indices], labels[val_indices],
-        data[test_indices], labels[test_indices]
-    )
-
-
 def save_npy_dataset(
     output_path: Path,
     train_data: np.ndarray,
