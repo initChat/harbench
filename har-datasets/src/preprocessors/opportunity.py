@@ -178,13 +178,13 @@ SENSOR_GROUPS = {
             'GYRO': list(range(106, 109)), # AngVelBody XYZ
         }
     },
-    'R_WRIST': {  # Right Wrist bluetooth accelerometer (ACC only)
+    'RWR': {  # Right Wrist bluetooth accelerometer (ACC only)
         'channels': list(range(21, 24)),
         'modalities': {
             'ACC': list(range(21, 24)),
         }
     },
-    'R_KNEE': {  # Right Knee (RKN^) bluetooth accelerometer (ACC only)
+    'RKN_': {  # Right Knee (RKN^) bluetooth accelerometer (ACC only)
         'channels': list(range(0, 3)),
         'modalities': {
             'ACC': list(range(0, 3)),
