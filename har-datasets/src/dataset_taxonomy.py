@@ -11,6 +11,7 @@ get_activity_overlap()    — canonical groups shared between two datasets
 
 note:
 - currently hardcode activity taxonomy and sensor location mapping, but could be made configurable in the future
+- only use to support visualze_server.py for serach filter
 """
 
 import re
