@@ -34,3 +34,6 @@ __pycache__/
 
 # Logs
 *.log
+
+# imm
+test_work/
