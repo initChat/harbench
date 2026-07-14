@@ -109,6 +109,25 @@ USABLE_CLASSES = {
     "vtt_coniot": None,
 }
 
+def _resolve_dataset_dir(data_root, dataset):
+    """Resolve a dataset name to its on-disk directory, tolerating case differences.
+
+    Dataset dirs are conventionally lowercase, but some (e.g. "USC-HAD") are not,
+    which breaks a naive `dataset.lower()` join on case-sensitive filesystems.
+    """
+    exact = os.path.join(data_root, dataset.lower())
+    if os.path.exists(exact):
+        return exact
+
+    if os.path.isdir(data_root):
+        target = dataset.lower()
+        for entry in os.listdir(data_root):
+            if entry.lower() == target:
+                return os.path.join(data_root, entry)
+
+    return exact
+
+
 
 def load_dataset(dataset, sensors, data_root=None, modality="ACC"):
     """
@@ -130,7 +149,8 @@ def load_dataset(dataset, sensors, data_root=None, modality="ACC"):
     if data_root is None:
         data_root = DEFAULT_DATA_ROOT
 
-    dataset_path = os.path.join(data_root, dataset.lower())
+    # dataset_path = os.path.join(data_root, dataset.lower())
+    dataset_path = _resolve_dataset_dir(data_root, dataset)
 
     if not os.path.exists(dataset_path):
         raise FileNotFoundError(f"Dataset not found: {dataset_path}")
@@ -418,7 +438,8 @@ def collect_pretrain_files(datasets, sensors=None, data_root=None, modality="ACC
     file_paths = []
 
     for dataset in datasets:
-        dataset_path = os.path.join(data_root, dataset.lower())
+        # dataset_path = os.path.join(data_root, dataset.lower())
+        dataset_path = _resolve_dataset_dir(data_root, dataset)
         if not os.path.exists(dataset_path):
             print(f"Warning: {dataset_path} not found, skipping")
             continue
