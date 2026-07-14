@@ -12,16 +12,15 @@ SelfBack dataset:
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from typing import Dict, Any, Tuple
+from typing import Dict, Any
 import logging
 
 from .base import BasePreprocessor
 from .utils import (
-    create_sliding_windows,
     create_sliding_windows_multi_session,
     filter_invalid_samples,
     get_class_distribution,
-    resample_timeseries
+    resample_timeseries,
 )
 from .common import (
     download_file,
@@ -152,7 +151,6 @@ class SelfBackPreprocessor(BasePreprocessor):
             target_path: Path to save organized data (data/raw/selfback)
         """
         import shutil
-        from tqdm import tqdm
 
         logger.info(f"Organizing SelfBack data from {extracted_path} to {target_path}")
 

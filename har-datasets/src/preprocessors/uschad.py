@@ -13,16 +13,15 @@ USC-HAD Dataset:
 import numpy as np
 import scipy.io
 from pathlib import Path
-from typing import Dict, Any, Tuple
+from typing import Dict, Any
 import logging
 
 from .base import BasePreprocessor
 from .utils import (
-    create_sliding_windows,
     create_sliding_windows_multi_session,
     filter_invalid_samples,
     get_class_distribution,
-    resample_timeseries
+    resample_timeseries,
 )
 from .common import (
     download_file,

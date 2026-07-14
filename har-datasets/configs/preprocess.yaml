@@ -7,6 +7,8 @@ global:
   # processed_data_path: har-datasets/data/processed
   processed_data_path: C:\Users\chatc\Workarea\Dataset\All\processed_260612
   seed: 42
+  # raw_data_path: har-datasets/data/raw
+  # processed_data_path: har-datasets/data/processed
   window_size: 150        # 5 seconds @ 30Hz
   stride: 90              # 3 seconds @ 30Hz (40% overlap) - v1.0 compatible
 
@@ -23,14 +25,6 @@ datasets:
     # Window parameters
     window_size: 150      # 5 seconds @ 30Hz
     stride: 90            # 3 seconds @ 30Hz (40% overlap)
-
-    # Normalization method: 'standardize', 'minmax', 'normalize'
-    normalize_method: standardize
-
-    # Data split ratios
-    train_ratio: 0.7
-    val_ratio: 0.15
-    test_ratio: 0.15
 
     # Dataset information (for reference)
     num_activities: 19
@@ -51,14 +45,6 @@ datasets:
     window_size: 150      # 5 seconds @ 30Hz
     stride: 90            # 3 seconds @ 30Hz (40% overlap)
 
-    # Normalization method: 'standardize', 'minmax', 'normalize'
-    normalize_method: standardize
-
-    # Data split ratios
-    train_ratio: 0.7
-    val_ratio: 0.15
-    test_ratio: 0.15
-
     # Dataset information (for reference)
     num_activities: 12
     num_subjects: 10
@@ -77,11 +63,6 @@ datasets:
     # Window parameters
     window_size: 150      # 5 seconds @ 30Hz
     stride: 90            # 3 seconds @ 30Hz (40% overlap)
-
-    # Data split ratios
-    train_ratio: 0.7
-    val_ratio: 0.15
-    test_ratio: 0.15
 
     # Dataset information (for reference)
     num_activities: 10
@@ -285,9 +266,6 @@ datasets:
     # stride: 15            # 0.5 second @ 30Hz (50% overlap)
     window_size: 150      # 5 seconds @ 30Hz
     stride: 90            # 3 seconds @ 30Hz (40% overlap)
-
-    # Scenarios to process (multiple can be specified)
-    scenarios: ['ideal']  # Choose from: ideal, self, mutual
 
     # Dataset information (for reference)
     num_activities: 17    # Mid-level gestures (Open/Close doors, drawers, etc.)

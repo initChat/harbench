@@ -6,6 +6,8 @@ har-datasets/data/
 pretrained/*
 !pretrained/.gitkeep
 !pretrained/*.url
+# Package marker so the bundled mtl weights ship via `harbench.pretrained`
+!pretrained/__init__.py
 # Our trained models (SSL-Wearables based)
 !pretrained/mtl.pth
 !pretrained/simclr.pth
