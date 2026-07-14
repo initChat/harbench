@@ -74,6 +74,9 @@ class TMDPreprocessor(BasePreprocessor):
         # Preprocessing parameters
         self.window_size = config.get('window_size', 150)  # 5 seconds @ 30Hz
         self.stride = config.get('stride', 30)  # 1 second @ 30Hz
+        # self.window_size = config.get('window_size', 600)  # tested 20 seconds @ 30Hz
+        # self.stride = config.get('stride', 120)  # tested 4 seconds @ 30Hz
+
 
         # Scaling factor (m/s^2 -> G conversion)
         self.scale_factor = DATASETS.get('TMD', {}).get('scale_factor', None)
@@ -373,6 +376,84 @@ class TMDPreprocessor(BasePreprocessor):
 
         return cleaned
 
+    def _filter_sparse_windows(
+        self,
+        windows: np.ndarray,
+        labels: np.ndarray,
+        min_valid_ratio: float = None
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Drop windows where too few timesteps contain real data.
+        A timestep is considered valid if at least one channel is non-zero.
+        Targets zero-padded windows from short sessions (pad_last=True).
+
+        Args:
+            windows: (N, T, C) array
+            labels: (N,) array
+            min_valid_ratio: minimum fraction of non-zero timesteps to keep window;
+                             defaults to config value or 0.8
+
+        Returns:
+            Filtered (windows, labels)
+        """
+        if min_valid_ratio is None:
+            min_valid_ratio = self.config.get('min_valid_ratio', 0.5)
+
+        T = windows.shape[1]
+
+        # A timestep is valid if any channel is non-zero: (N, T) bool
+        valid_timesteps = (windows != 0).any(axis=2)
+
+        # Fraction of valid timesteps per window: (N,)
+        valid_ratio = valid_timesteps.sum(axis=1) / T
+
+        keep_mask = valid_ratio >= min_valid_ratio
+
+        n_dropped = (~keep_mask).sum()
+        if n_dropped > 0:
+            logger.info(
+                f"  Sparse filter (min_valid_ratio={min_valid_ratio}): "
+                f"dropped {n_dropped}/{len(windows)} windows"
+            )
+
+        return windows[keep_mask], labels[keep_mask]
+
+    def _filter_low_variance_windows(
+        self,
+        windows: np.ndarray,
+        labels: np.ndarray,
+        variance_threshold: float = None
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Drop windows where ALL channels have variance below threshold.
+        A window is kept if at least one channel has variance >= threshold.
+
+        Args:
+            windows: (N, T, C) array
+            labels: (N,) array
+            variance_threshold: minimum variance; defaults to config value or 0.01
+
+        Returns:
+            Filtered (windows, labels)
+        """
+        if variance_threshold is None:
+            variance_threshold = self.config.get('variance_threshold', 0.01)
+
+        # Variance per window per channel: (N, C)
+        per_channel_var = windows.var(axis=1)  # axis=1 is time dimension
+
+        # Keep window if at least one channel exceeds threshold
+        keep_mask = (per_channel_var >= variance_threshold).any(axis=1)
+
+        n_dropped = (~keep_mask).sum()
+        if n_dropped > 0:
+            logger.info(
+                f"  Variance filter (threshold={variance_threshold}): "
+                f"dropped {n_dropped}/{len(windows)} windows"
+            )
+
+        return windows[keep_mask], labels[keep_mask]
+
     def extract_features(self, data: Dict[int, list]) -> Dict[int, Dict[str, Dict[str, np.ndarray]]]:
         """
         Feature extraction (windowing and scaling per sensor/modality)
@@ -402,6 +483,24 @@ class TMDPreprocessor(BasePreprocessor):
 
             if len(windowed_data) == 0:
                 logger.warning(f"  Subject {subject_id:02d} has no valid windows, skipping")
+                continue
+
+            # Drop windows with too many zero-padded timesteps
+            windowed_data, windowed_labels = self._filter_sparse_windows(
+                windowed_data, windowed_labels
+            )
+
+            if len(windowed_data) == 0:
+                logger.warning(f"  Subject {subject_id:02d} has no windows after sparse filter, skipping")
+                continue
+
+            # Drop low-variance (flat/sparse) windows
+            windowed_data, windowed_labels = self._filter_low_variance_windows(
+                windowed_data, windowed_labels
+            )
+
+            if len(windowed_data) == 0:
+                logger.warning(f"  Subject {subject_id:02d} has no windows after variance filter, skipping")
                 continue
 
             # Split into ACC (0-2) and GYRO (3-5)
