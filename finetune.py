@@ -420,8 +420,27 @@ def create_backbone(model_type, weights_path, num_sensors, in_channels, device):
     return backbone
 
 
+def _extract_backbone_state_dict(model, model_type):
+    """Extract a state dict that create_backbone() can reload via --weights.
+
+    NDeviceResnet/MultiDeviceMaskedResnet/MultiDeviceResnetCPC each wrap num_sensors
+    per-sensor encoders that were all loaded from the same state_dict_path (see
+    create_backbone()); saving the whole wrapped backbone would prefix every key with
+    "feature_extractors.0."/"resnet_encoders.0." and no longer match what those classes'
+    strict per-encoder load_state_dict() expects. Saving encoder 0 keeps the round trip
+    key-compatible.
+    """
+    backbone = model.backbone
+    if model_type == "resnet":
+        return backbone.feature_extractors[0].state_dict()
+    if model_type in ("maskedresnet", "cpc"):
+        return backbone.resnet_encoders[0].state_dict()
+    return backbone.state_dict()
+
+
 def train_model(train_loader, val_loader, test_loader, n_classes, num_sensors,
-                weights_path, device, args, model_type="resnet", log_func=None):
+                weights_path, device, args, model_type="resnet", log_func=None,
+                return_backbone=False):
     """Train and evaluate a model."""
     if log_func is None:
         log_func = print
@@ -502,12 +521,16 @@ def train_model(train_loader, val_loader, test_loader, n_classes, num_sensors,
 
     test_loss, test_f1, test_acc = evaluate(model, test_loader, criterion, device, model_type)
 
-    return {
+    metrics = {
         "test_f1": float(test_f1),
         "test_acc": float(test_acc),
         "test_loss": float(test_loss),
         "best_val_f1": float(best_val_f1),
     }
+
+    if return_backbone:
+        return metrics, model
+    return metrics
 
 
 # =============================================================================
@@ -618,6 +641,114 @@ def run_finetune(args):
             "mean_acc": float(mean_acc),
             "std_acc": float(std_acc),
         },
+        "timestamp": timestamp,
+    }
+
+    results_path = os.path.join(output_dir, "results.json")
+    with open(results_path, "w") as f:
+        json.dump(results, f, indent=2)
+
+    log(f"\nResults saved to: {results_path}")
+    log_file.close()
+    return results
+
+
+# =============================================================================
+# Mode: Finetune (single split)
+# =============================================================================
+
+def run_finetune_single_split(args):
+    """Fine-tune on one split (FOLDS[0]) instead of the full 4-fold CV.
+
+    Used when only one trained backbone is needed (see --save_backbone) and paying
+    for 4 folds of training would be wasted work.
+    """
+    device = torch.device(args.device if torch.cuda.is_available() else "cpu")
+
+    model_config = MODELS.get(args.model, MODELS["resnet"])
+    model_type = model_config["type"]
+
+    weights_path = args.weights
+    if weights_path is None and "weights" in model_config:
+        weights_path = model_config["weights"]
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_name = f"{timestamp}_{args.model}"
+    output_dir = os.path.join(args.output_dir, run_name)
+    os.makedirs(output_dir, exist_ok=True)
+
+    log_path = os.path.join(output_dir, "log.txt")
+    log_file = open(log_path, "w")
+
+    def log(msg):
+        print(msg)
+        log_file.write(msg + "\n")
+        log_file.flush()
+
+    log(f"Using device: {device}")
+    log(f"Model: {args.model} ({model_config['description']})")
+    log(f"Weights: {weights_path or 'scratch (random init)'}")
+    log(f"Loading dataset: {args.dataset}")
+    log(f"Sensors: {args.sensors}")
+
+    # Load data
+    X, Y, U = load_dataset(args.dataset, args.sensors, args.data_root)
+    log(f"Data shape: X={X.shape}, Y={Y.shape}, U={U.shape}")
+
+    n_classes = len(np.unique(Y))
+    num_sensors = len(args.sensors)
+    log(f"Classes: {n_classes}, Sensors: {num_sensors}")
+
+    fold = FOLDS[0]
+    log(f"\n{'='*60}")
+    log(f"Single split: test_users={fold['test']}, val_users={fold['val']}")
+    log(f"{'='*60}")
+
+    train_loader, val_loader, test_loader = create_dataloaders(
+        X, Y, U, fold["test"], fold["val"],
+        batch_size=args.batch_size, data_ratio=args.data_ratio,
+        max_samples_per_epoch=args.max_samples_per_epoch
+    )
+
+    result, model = train_model(
+        train_loader, val_loader, test_loader,
+        n_classes, num_sensors,
+        weights_path, device, args,
+        model_type=model_type,
+        log_func=log,
+        return_backbone=True,
+    )
+
+    log(f"Result: F1={result['test_f1']:.4f}, Acc={result['test_acc']:.4f}")
+
+    if args.save_backbone:
+        os.makedirs(os.path.dirname(args.save_backbone) or ".", exist_ok=True)
+        torch.save(_extract_backbone_state_dict(model, model_type), args.save_backbone)
+        log(f"Backbone saved to: {args.save_backbone}")
+
+    results = {
+        "mode": "finetune_single_split",
+        "model": args.model,
+        "model_type": model_type,
+        "dataset": args.dataset,
+        "sensors": args.sensors,
+        "weights": weights_path,
+        "seed": args.seed,
+        "n_classes": n_classes,
+        "num_sensors": num_sensors,
+        "hyperparameters": {
+            "epochs": args.epochs,
+            "batch_size": args.batch_size,
+            "learning_rate": args.lr,
+            "patience": args.patience,
+            "weight_decay": 1e-5,
+            "scheduler": "CosineAnnealingLR",
+            "optimizer": "Adam",
+            "data_ratio": args.data_ratio,
+        },
+        "split": fold,
+        "result": result,
+        "backbone_path": args.save_backbone,
         "timestamp": timestamp,
     }
 
@@ -1105,7 +1236,14 @@ Examples:
                         help="Run zero-shot (LODO) evaluation. Optionally specify target: dsads, mhealth, pamap2, or 'all'")
     parser.add_argument("--zeroshot-supervised", action="store_true",
                         help="Run supervised evaluation on zero-shot target datasets (upper bound reference)")
+    parser.add_argument("--single_split", action="store_true",
+                        help="Train once on FOLDS[0] instead of the full 4-fold CV")
+    parser.add_argument("--save_backbone", type=str, default=None,
+                        help="Path to save the trained backbone's state_dict (requires --single_split)")
     args = parser.parse_args()
+
+    if args.save_backbone and not args.single_split:
+        parser.error("--save_backbone requires --single_split")
 
     set_seed(args.seed)
 
@@ -1115,6 +1253,11 @@ Examples:
     elif getattr(args, 'zeroshot_supervised', False):
         args.output_dir = os.path.join(args.output_dir, "zeroshot_supervised")
         run_zeroshot_supervised(args)
+    elif args.single_split:
+        if args.dataset is None or args.sensors is None:
+            parser.error("--dataset and --sensors are required")
+        args.output_dir = os.path.join(args.output_dir, "finetune_single_split")
+        run_finetune_single_split(args)
     else:
         if args.dataset is None or args.sensors is None:
             parser.error("--dataset and --sensors are required")
