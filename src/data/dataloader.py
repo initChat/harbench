@@ -6,6 +6,8 @@ Structure: {data_root}/{dataset}/USER{id}/{sensor}/{modality}/X.npy, Y.npy
 """
 
 import os
+import re
+import sys
 import glob
 import numpy as np
 import torch
@@ -19,6 +21,22 @@ DEFAULT_DATA_ROOT = os.environ.get(
     "HARBENCH_DATA_ROOT",
     os.path.join(os.path.dirname(__file__), "../../har-datasets/data/processed")
 )
+
+# har-datasets' own package is also named "src" (relative to its root), which
+# is already bound in sys.modules for *this* package tree -- inserting
+# har-datasets/ and importing "src.dataset_taxonomy" would silently resolve to
+# the wrong "src". Instead put har-datasets/src itself on sys.path and import
+# its bare top-level modules, which is exactly the layout dataset_taxonomy.py's
+# import fallback (`except ImportError: from dataset_info import DATASETS`)
+# is written to support.
+_HAR_DATASETS_SRC = os.path.normpath(
+    os.path.join(os.path.dirname(__file__), "../../har-datasets/src")
+)
+if _HAR_DATASETS_SRC not in sys.path:
+    sys.path.insert(0, _HAR_DATASETS_SRC)
+
+from dataset_info import DATASETS
+from dataset_taxonomy import get_dataset_label_mapping
 
 
 # =============================================================================
@@ -247,6 +265,107 @@ def load_dataset(dataset, sensors, data_root=None, modality="ACC"):
             print(f"  Remaining classes: {len(usable_classes)}, samples: {len(Y)}")
 
     return X, Y, U
+
+
+def _lookup_dataset_info_key(dataset_name):
+    """Resolve a dataset name (as used on-disk, e.g. "har70plus"/"USC-HAD") to
+    its dataset_info.py DATASETS key (e.g. "HAR70PLUS"/"USCHAD"), tolerating
+    case and punctuation differences between the two naming conventions."""
+    normalized = re.sub(r"[^A-Z0-9]", "", dataset_name.upper())
+    for key in DATASETS:
+        if re.sub(r"[^A-Z0-9]", "", key.upper()) == normalized:
+            return key
+    raise KeyError(f"No dataset_info.py DATASETS entry matches dataset {dataset_name!r}")
+
+
+def _class_idx_to_taxonomy_group(dataset_name):
+    """Return {class_idx: canonical_taxonomy_group} for a dataset, built from
+    dataset_taxonomy.py's get_dataset_label_mapping() (raw_label -> group)
+    composed with dataset_info.py's own idx -> raw_label labels dict.
+
+    Only valid for datasets whose Y.npy class indices still match
+    dataset_info.py's labels dict directly -- i.e. dataset_lower not present in
+    load_dataset()'s USABLE_CLASSES remapping (confirmed true today for
+    har70plus/hhar/uschad, see .claude/260714_plan_finetune_moreSensor.md
+    design 2/3). A dataset that *is* remapped will raise KeyError below when
+    its remapped indices are looked up, which is the correct fail-loud
+    behavior rather than silently mislabeling pooled samples.
+    """
+    dataset_key = _lookup_dataset_info_key(dataset_name)
+    label_to_group = get_dataset_label_mapping(dataset_key)  # {raw_label: group}, skips idx == -1
+    idx_to_label = DATASETS[dataset_key]["labels"]
+    return {idx: label_to_group[label] for idx, label in idx_to_label.items() if idx != -1}
+
+
+def load_pooled_datasets(pairs, modality="ACC"):
+    """
+    Load and pool several selected baseline (dataset, sensors, data_root) pairs
+    into one joint training set, remapping each pair's own labels onto
+    dataset_taxonomy.py's canonical activity groups so pairs from different
+    datasets share one label space.
+
+    See .claude/260714_plan_finetune_moreSensor.md (design 3) in
+    ssl-finetune-from-heavyscore for the full design discussion.
+
+    Args:
+        pairs: list of dicts, each with keys "dataset", "sensors", "data_root"
+               -- the same shape as the manifest finetune.py's pooled-training
+               CLI mode is expected to consume (design 4).
+        modality: passed through to load_dataset() for every pair.
+
+    Returns:
+        X: pooled sensor data (N, C, T)
+        Y: dense int class ids in [0, len(group_names)), indexing group_names
+        U: user ids namespaced per-dataset as "<dataset>::<raw_user_id>" so
+           reused raw user-id numbers across datasets don't collide during
+           train/val/test splitting
+        group_names: sorted list of canonical taxonomy groups actually present
+           across these pairs -- the classifier head for this pooled run must
+           be sized len(group_names), not the full ACTIVITY_TAXONOMY, and this
+           list is what makes row Y[i]'s class human-readable (group_names[Y[i]])
+    """
+    if not pairs:
+        raise ValueError("load_pooled_datasets() requires at least one pair")
+
+    X_parts, group_parts, U_parts = [], [], []
+
+    for pair in pairs:
+        dataset = pair["dataset"]
+        sensors = pair["sensors"]
+        data_root = pair.get("data_root")
+
+        X, Y_idx, U = load_dataset(dataset, sensors, data_root, modality=modality)
+
+        idx_to_group = _class_idx_to_taxonomy_group(dataset)
+        try:
+            groups = np.array([idx_to_group[y] for y in Y_idx.tolist()])
+        except KeyError as e:
+            raise ValueError(
+                f"{dataset}: class index {e} from Y.npy has no entry in "
+                f"dataset_info.py's labels for this dataset -- either an "
+                f"unmapped label or a USABLE_CLASSES-remapped index (pooling "
+                f"only supports datasets whose indices match dataset_info.py "
+                f"directly)"
+            ) from e
+
+        # "undefined" (null/transition labels) is an expected drop, not a
+        # taxonomy gap -- classify_label_strict() (inside
+        # get_dataset_label_mapping) already raised UncategorizedLabelError
+        # for any real taxonomy gap, so nothing else needs filtering here.
+        keep = groups != "undefined"
+        X_parts.append(X[keep])
+        group_parts.append(groups[keep])
+        U_parts.append(np.array([f"{dataset}::{u}" for u in U[keep]]))
+
+    X = np.concatenate(X_parts, axis=0)
+    all_groups = np.concatenate(group_parts, axis=0)
+    U = np.concatenate(U_parts, axis=0)
+
+    group_names = sorted(set(all_groups.tolist()))
+    group_to_idx = {group: i for i, group in enumerate(group_names)}
+    Y = np.array([group_to_idx[group] for group in all_groups], dtype=np.int64)
+
+    return X, Y, U, group_names
 
 
 def create_dataloaders(X, Y, U, test_users, val_users, batch_size=64, num_workers=0, data_ratio=1.0,
