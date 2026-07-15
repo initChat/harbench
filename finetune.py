@@ -46,7 +46,7 @@ from torch.utils.data import DataLoader, WeightedRandomSampler
 from tqdm import tqdm
 
 # All imports from artifact/src (standalone, no parent directory dependency)
-from src.data.dataloader import load_dataset, create_dataloaders
+from src.data.dataloader import load_dataset, load_pooled_datasets, create_dataloaders
 from src.data.dataset import HARDataset
 from src.models import (
     Resnet, NDeviceResnet, TwoLayerClassifier,
@@ -762,6 +762,127 @@ def run_finetune_single_split(args):
 
 
 # =============================================================================
+# Mode: Finetune (pooled multi-baseline)
+# =============================================================================
+
+def run_finetune_pooled(args):
+    """Fine-tune once on data pooled from multiple baseline (dataset, sensors,
+    data_root) pairs, listed in a manifest file, instead of a single dataset.
+
+    See .claude/260714_plan_finetune_moreSensor.md (design 4) in
+    ssl-finetune-from-heavyscore for the full design discussion.
+    """
+    device = torch.device(args.device if torch.cuda.is_available() else "cpu")
+
+    model_config = MODELS.get(args.model, MODELS["resnet"])
+    model_type = model_config["type"]
+
+    weights_path = args.weights
+    if weights_path is None and "weights" in model_config:
+        weights_path = model_config["weights"]
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_name = f"{timestamp}_{args.model}"
+    output_dir = os.path.join(args.output_dir, run_name)
+    os.makedirs(output_dir, exist_ok=True)
+
+    log_path = os.path.join(output_dir, "log.txt")
+    log_file = open(log_path, "w")
+
+    def log(msg):
+        print(msg)
+        log_file.write(msg + "\n")
+        log_file.flush()
+
+    with open(args.baseline_manifest) as f:
+        pairs = json.load(f)
+
+    log(f"Using device: {device}")
+    log(f"Model: {args.model} ({model_config['description']})")
+    log(f"Weights: {weights_path or 'scratch (random init)'}")
+    log(f"Loading pooled datasets from manifest: {args.baseline_manifest}")
+    log(f"Pairs: {[(p['dataset'], p['sensors']) for p in pairs]}")
+
+    # Load and pool data
+    X, Y, U, group_names = load_pooled_datasets(pairs)
+    log(f"Data shape: X={X.shape}, Y={Y.shape}, U={U.shape}")
+
+    n_classes = len(group_names)
+    num_sensors = 1  # load_pooled_datasets() requires exactly one sensor per pair
+    log(f"Classes: {n_classes} ({group_names}), Sensors: {num_sensors}")
+
+    # FOLDS[0]'s test/val ids are per-dataset-local synthetic user ids (every
+    # preprocessed dataset has exactly USER1..USER8), so namespacing them per pair
+    # and unioning over the manifest reserves the same 2 val users (and 2 test
+    # users) from every pooled dataset -- this stratifies across datasets by
+    # construction with no extra logic.
+    fold = FOLDS[0]
+    test_users = [f"{p['dataset']}::{u}" for p in pairs for u in fold["test"]]
+    val_users = [f"{p['dataset']}::{u}" for p in pairs for u in fold["val"]]
+
+    log(f"\n{'='*60}")
+    log(f"Pooled split (per-pair FOLDS[0]): test={fold['test']}, val={fold['val']}")
+    log(f"{'='*60}")
+
+    train_loader, val_loader, test_loader = create_dataloaders(
+        X, Y, U, test_users, val_users,
+        batch_size=args.batch_size, data_ratio=args.data_ratio,
+        max_samples_per_epoch=args.max_samples_per_epoch
+    )
+
+    result, model = train_model(
+        train_loader, val_loader, test_loader,
+        n_classes, num_sensors,
+        weights_path, device, args,
+        model_type=model_type,
+        log_func=log,
+        return_backbone=True,
+    )
+
+    log(f"Result: F1={result['test_f1']:.4f}, Acc={result['test_acc']:.4f}")
+
+    if args.save_backbone:
+        os.makedirs(os.path.dirname(args.save_backbone) or ".", exist_ok=True)
+        torch.save(_extract_backbone_state_dict(model, model_type), args.save_backbone)
+        log(f"Backbone saved to: {args.save_backbone}")
+
+    results = {
+        "mode": "finetune_pooled",
+        "model": args.model,
+        "model_type": model_type,
+        "baseline_manifest": args.baseline_manifest,
+        "pairs": pairs,
+        "group_names": group_names,
+        "weights": weights_path,
+        "seed": args.seed,
+        "n_classes": n_classes,
+        "num_sensors": num_sensors,
+        "hyperparameters": {
+            "epochs": args.epochs,
+            "batch_size": args.batch_size,
+            "learning_rate": args.lr,
+            "patience": args.patience,
+            "weight_decay": 1e-5,
+            "scheduler": "CosineAnnealingLR",
+            "optimizer": "Adam",
+            "data_ratio": args.data_ratio,
+        },
+        "split": fold,
+        "result": result,
+        "backbone_path": args.save_backbone,
+        "timestamp": timestamp,
+    }
+
+    results_path = os.path.join(output_dir, "results.json")
+    with open(results_path, "w") as f:
+        json.dump(results, f, indent=2)
+
+    log(f"\nResults saved to: {results_path}")
+    log_file.close()
+    return results
+
+
+# =============================================================================
 # Mode: Zero-shot
 # =============================================================================
 
@@ -1239,11 +1360,19 @@ Examples:
     parser.add_argument("--single_split", action="store_true",
                         help="Train once on FOLDS[0] instead of the full 4-fold CV")
     parser.add_argument("--save_backbone", type=str, default=None,
-                        help="Path to save the trained backbone's state_dict (requires --single_split)")
+                        help="Path to save the trained backbone's state_dict "
+                             "(requires --single_split or --baseline_manifest)")
+    parser.add_argument("--baseline_manifest", type=str, default=None,
+                        help="Path to a JSON manifest (list of {dataset, sensors, data_root}) "
+                             "to pool and fine-tune on jointly, instead of a single --dataset. "
+                             "Trains once on a per-pair-namespaced FOLDS[0] split. Replaces "
+                             "--dataset/--sensors/--data_root for this run.")
     args = parser.parse_args()
 
-    if args.save_backbone and not args.single_split:
-        parser.error("--save_backbone requires --single_split")
+    if args.save_backbone and not (args.single_split or args.baseline_manifest):
+        parser.error("--save_backbone requires --single_split or --baseline_manifest")
+    if args.single_split and args.baseline_manifest:
+        parser.error("--single_split and --baseline_manifest are mutually exclusive")
 
     set_seed(args.seed)
 
@@ -1253,6 +1382,9 @@ Examples:
     elif getattr(args, 'zeroshot_supervised', False):
         args.output_dir = os.path.join(args.output_dir, "zeroshot_supervised")
         run_zeroshot_supervised(args)
+    elif args.baseline_manifest:
+        args.output_dir = os.path.join(args.output_dir, "finetune_pooled")
+        run_finetune_pooled(args)
     elif args.single_split:
         if args.dataset is None or args.sensors is None:
             parser.error("--dataset and --sensors are required")
