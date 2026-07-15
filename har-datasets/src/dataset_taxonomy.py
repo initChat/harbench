@@ -56,14 +56,12 @@ ACTIVITY_TAXONOMY: Dict[str, List[str]] = {
         r"climbingstairs", r"ascending[\s_]*stair",
         r"upstairs", r"go[\s_]*upstairs",
         r"climbing[\s_-]*up",
-        r"\bup(wards?)?\b",  # LARA "Upwards"
         r"stairsupdown",
     ],
     "stairs_down": [
         r"stairsdown", r"stairs[\s_]*down", r"descend[\s_]*stair",
         r"descending[\s_]*stair", r"climbing[\s_-]*down",
         r"downstairs", r"go[\s_]*downstairs",
-        r"\bdown(wards?)?\b",
     ],
     "stairs_generic": [
         r"^\s*stairs\s*$",  # WISDM "Stairs" (ambiguous, no direction)
@@ -230,6 +228,15 @@ ACTIVITY_TAXONOMY: Dict[str, List[str]] = {
     "salute": [r"salute"],
 }
 
+# Generic directional words ("Upwards"/"Downwards" in LARA) that would
+# otherwise swallow unrelated activities sharing that word (e.g. "Jumping
+# Up", "Elevator Down") if checked in the same pass as every other group's
+# patterns — only consulted once nothing in ACTIVITY_TAXONOMY matches at all.
+_FALLBACK_TAXONOMY: Dict[str, List[str]] = {
+    "stairs_up": [r"\bup(wards?)?\b"],
+    "stairs_down": [r"\bdown(wards?)?\b"],
+}
+
 # ---------------------------------------------------------------------------
 # Sensor location normalization
 # Maps raw sensor names from dataset_info to canonical body-location strings.
@@ -300,7 +307,36 @@ def classify_label(label: str) -> str:
             if re.search(pattern, label_lower):
                 return group
 
+    for group, patterns in _FALLBACK_TAXONOMY.items():
+        for pattern in patterns:
+            if re.search(pattern, label_lower):
+                return group
+
     return "uncategorized"
+
+
+class UncategorizedLabelError(ValueError):
+    """Raised by classify_label_strict() when a label matches no taxonomy group."""
+
+
+def classify_label_strict(label: str) -> str:
+    """
+    Training-time variant of classify_label().
+
+    Same mapping, but raises UncategorizedLabelError instead of returning the
+    "uncategorized" sentinel: at training time an unmatched label means the
+    taxonomy is missing a pattern/group, and silently pooling it under a
+    fake group would corrupt the training set rather than just misclassify a
+    UI search-filter bucket. "undefined" (null/transition markers) is still
+    returned as-is — that's an expected drop, not a taxonomy gap.
+    """
+    group = classify_label(label)
+    if group == "uncategorized":
+        raise UncategorizedLabelError(
+            f"Label {label!r} matched no group in ACTIVITY_TAXONOMY — add a "
+            "pattern/group for it, do not pool it silently."
+        )
+    return group
 
 
 # ---------------------------------------------------------------------------
@@ -323,6 +359,26 @@ def get_dataset_groups(dataset_name: str) -> Dict[str, List[str]]:
         groups.setdefault(group, []).append(label)
 
     return groups
+
+
+def get_dataset_label_mapping(dataset_name: str) -> Dict[str, str]:
+    """
+    Return {raw_label: canonical_group} for a dataset's non-null labels,
+    using classify_label_strict() so an "uncategorized" raw label raises
+    instead of pooling silently under a fake group.
+
+    For training-time consumers (pooled finetuning); get_dataset_groups()
+    stays on the tolerant classify_label() for visualize_server.py's UI
+    search filter, which should never crash on an unmapped label.
+    """
+    if dataset_name not in DATASETS:
+        raise ValueError(f"Unknown dataset: {dataset_name}")
+
+    return {
+        label: classify_label_strict(label)
+        for idx, label in DATASETS[dataset_name]["labels"].items()
+        if idx != -1
+    }
 
 
 def get_all_groups_for_dataset(dataset_name: str) -> Set[str]:
