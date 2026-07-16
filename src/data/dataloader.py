@@ -434,11 +434,23 @@ def create_dataloaders(X, Y, U, test_users, val_users, batch_size=64, num_worker
     val_dataset = HARDataset(X_val, Y_val)
     test_dataset = HARDataset(X_test, Y_test)
 
-    # Use WeightedRandomSampler to correct class imbalance
+    # Use WeightedRandomSampler to correct class imbalance, keyed by (source
+    # dataset, class) rather than class alone -- with pooled training data
+    # (see load_pooled_datasets(), which namespaces U as "<dataset>::<user>"),
+    # keying by class alone leaves each class's per-sample draw probability
+    # split across its contributing datasets in proportion to their raw
+    # counts, so a class dominated by one large dataset would still be
+    # learned almost entirely from that dataset's samples. Keying by
+    # (dataset, class) instead balances both axes at once. U without "::"
+    # (single-dataset runs) collapses to one implicit dataset group, so this
+    # is a no-op there -- identical to the old class-only weighting.
     if use_weighted_sampler:
-        class_count = Counter(Y_train)
-        class_weights = {cls: 1.0 / count for cls, count in class_count.items()}
-        sample_weights = np.array([class_weights[y] for y in Y_train])
+        train_dataset_ids = [str(u).split("::", 1)[0] if "::" in str(u) else "" for u in U[train_mask]]
+        group_count = Counter(zip(train_dataset_ids, Y_train.tolist()))
+        group_weights = {group: 1.0 / count for group, count in group_count.items()}
+        sample_weights = np.array([
+            group_weights[(ds, y)] for ds, y in zip(train_dataset_ids, Y_train.tolist())
+        ])
         sample_weights = torch.from_numpy(sample_weights).float()
 
         # Determine number of samples: use original data count as baseline (ensures same update count in few-shot)
