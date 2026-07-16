@@ -811,17 +811,33 @@ def run_finetune_pooled(args):
     num_sensors = 1  # load_pooled_datasets() requires exactly one sensor per pair
     log(f"Classes: {n_classes} ({group_names}), Sensors: {num_sensors}")
 
-    # FOLDS[0]'s test/val ids are per-dataset-local synthetic user ids (every
-    # preprocessed dataset has exactly USER1..USER8), so namespacing them per pair
-    # and unioning over the manifest reserves the same 2 val users (and 2 test
-    # users) from every pooled dataset -- this stratifies across datasets by
-    # construction with no extra logic.
-    fold = FOLDS[0]
-    test_users = [f"{p['dataset']}::{u}" for p in pairs for u in fold["test"]]
-    val_users = [f"{p['dataset']}::{u}" for p in pairs for u in fold["val"]]
+    # FOLDS[0]'s literal ids ([1,2]/[3,4]) assumed every preprocessed dataset
+    # uses raw user ids 1..8 -- false in practice (e.g. har70plus at some
+    # data_roots uses raw ids 501..518), which silently produced empty val/test
+    # splits. Instead, reserve the first 2 sorted raw user ids per dataset for
+    # test and the next 2 for val -- position-based, so every pooled dataset
+    # still contributes exactly 2 test + 2 val users regardless of its actual
+    # id numbering.
+    dataset_raw_users = defaultdict(set)
+    for u in U:
+        ds, _, raw = u.partition("::")
+        dataset_raw_users[ds].add(raw)
+
+    test_users, val_users = [], []
+    for pair in pairs:
+        ds = pair["dataset"]
+        raw_ids = sorted(dataset_raw_users[ds], key=int)
+        if len(raw_ids) < 4:
+            raise ValueError(
+                f"{ds}: only {len(raw_ids)} distinct users found in pooled data, "
+                f"need >=4 for a 2 test + 2 val pooled split"
+            )
+        test_users += [f"{ds}::{u}" for u in raw_ids[:2]]
+        val_users += [f"{ds}::{u}" for u in raw_ids[2:4]]
 
     log(f"\n{'='*60}")
-    log(f"Pooled split (per-pair FOLDS[0]): test={fold['test']}, val={fold['val']}")
+    log(f"Pooled split (2 test + 2 val users per dataset, position-based): "
+        f"test={test_users}, val={val_users}")
     log(f"{'='*60}")
 
     train_loader, val_loader, test_loader = create_dataloaders(
@@ -867,7 +883,7 @@ def run_finetune_pooled(args):
             "optimizer": "Adam",
             "data_ratio": args.data_ratio,
         },
-        "split": fold,
+        "split": {"test": test_users, "val": val_users},
         "result": result,
         "backbone_path": args.save_backbone,
         "timestamp": timestamp,
