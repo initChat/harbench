@@ -700,6 +700,8 @@ def run_finetune_single_split(args):
     log(f"Classes: {n_classes}, Sensors: {num_sensors}")
 
     fold = FOLDS[0]
+    if args.custom_test_users and args.custom_val_users:
+        fold = {"test": args.custom_test_users, "val": args.custom_val_users}
     log(f"\n{'='*60}")
     log(f"Single split: test_users={fold['test']}, val_users={fold['val']}")
     log(f"{'='*60}")
@@ -1383,12 +1385,23 @@ Examples:
                              "to pool and fine-tune on jointly, instead of a single --dataset. "
                              "Trains once on a per-pair-namespaced FOLDS[0] split. Replaces "
                              "--dataset/--sensors/--data_root for this run.")
+    parser.add_argument("--custom_test_users", type=int, nargs="+", default=None,
+                        help="Override FOLDS[0]'s test users for --single_split with an explicit "
+                             "user-id list (e.g. a permanent held-out set never used in any "
+                             "regular fold). Requires --single_split and --custom_val_users. "
+                             "Omitting this preserves today's behavior exactly (FOLDS[0]).")
+    parser.add_argument("--custom_val_users", type=int, nargs="+", default=None,
+                        help="Paired with --custom_test_users -- see its help.")
     args = parser.parse_args()
 
     if args.save_backbone and not (args.single_split or args.baseline_manifest):
         parser.error("--save_backbone requires --single_split or --baseline_manifest")
     if args.single_split and args.baseline_manifest:
         parser.error("--single_split and --baseline_manifest are mutually exclusive")
+    if bool(args.custom_test_users) != bool(args.custom_val_users):
+        parser.error("--custom_test_users and --custom_val_users must be given together")
+    if args.custom_test_users and not args.single_split:
+        parser.error("--custom_test_users/--custom_val_users require --single_split")
 
     set_seed(args.seed)
 

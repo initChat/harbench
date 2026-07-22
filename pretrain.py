@@ -942,13 +942,19 @@ def validate(model, loader, device, method: str, use_rotation: bool = True):
     }
 
 
-def create_model(method: str, device: torch.device, use_rotation: bool = True) -> nn.Module:
+def create_model(method: str, device: torch.device, use_rotation: bool = True, resume_from: str = None) -> nn.Module:
     """Create model based on SSL method."""
     if method == "cpc":
         # CPC uses 4-layer ResNet (no layer5) to preserve temporal info
         backbone = ResNetForCPC(n_channels=3)
     else:
         backbone = Resnet(n_channels=3)
+
+    if resume_from:
+        # Warm-start: only the backbone carries over (matches how best.pth is
+        # already saved backbone-only via get_backbone_state_dict()); heads
+        # still start random each run.
+        backbone.load_state_dict(torch.load(resume_from, map_location=device))
 
     if method == "mtl":
         model = MTLPretrainModel(backbone, ssl_types=DEFAULT_SSL_TYPES, use_rotation=use_rotation)
@@ -1043,6 +1049,7 @@ Examples:
     parser.add_argument("--output_dir", type=str, default="results/pretrain", help="Output directory")
     parser.add_argument("--rotation", action="store_true", default=True, help="Use 3D rotation augmentation (all methods)")
     parser.add_argument("--no-rotation", action="store_false", dest="rotation", help="Disable rotation augmentation")
+    parser.add_argument("--resume_from", type=str, default=None, help="Path to a backbone-only checkpoint (e.g. a prior best.pth) to warm-start from; omit to random-init as before")
     args = parser.parse_args()
 
     # Apply defaults
@@ -1101,7 +1108,9 @@ Examples:
     log(f"Rotation augmentation: {args.rotation}")
     if args.method == "mtl":
         log(f"SSL types: {DEFAULT_SSL_TYPES}")
-    model = create_model(args.method, device, use_rotation=args.rotation)
+    if args.resume_from:
+        log(f"Resuming backbone from: {args.resume_from}")
+    model = create_model(args.method, device, use_rotation=args.rotation, resume_from=args.resume_from)
 
     total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     log(f"Total parameters: {total_params:,}")
@@ -1170,6 +1179,7 @@ Examples:
         "datasets": args.datasets,
         "sensors": args.sensors,
         "seed": args.seed,
+        "resume_from": args.resume_from,
         "hyperparameters": {
             "epochs": args.epochs,
             "batch_size": args.batch_size,
