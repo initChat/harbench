@@ -369,7 +369,8 @@ def load_pooled_datasets(pairs, modality="ACC"):
 
 
 def create_dataloaders(X, Y, U, test_users, val_users, batch_size=64, num_workers=0, data_ratio=1.0,
-                       use_weighted_sampler=True, max_samples_per_epoch=None):
+                       use_weighted_sampler=True, max_samples_per_epoch=None,
+                       test_mask=None, val_mask=None):
     """
     Create DataLoaders for train/val/test.
 
@@ -384,15 +385,19 @@ def create_dataloaders(X, Y, U, test_users, val_users, batch_size=64, num_worker
         data_ratio: Ratio of training data to use (0.0-1.0)
         use_weighted_sampler: Use WeightedRandomSampler to correct class imbalance
         max_samples_per_epoch: Maximum samples per epoch (None = use training data size)
+        test_mask: Precomputed boolean test mask (N,), overrides test_users if given --
+            callers use this when a per-user split isn't possible for part of the
+            pooled data (e.g. run_finetune_pooled()'s random per-window fallback).
+        val_mask: Precomputed boolean val mask (N,), overrides val_users if given.
 
     Returns:
         train_loader, val_loader, test_loader
     """
     from collections import Counter
 
-    # Split data by user
-    test_mask = np.isin(U, test_users)
-    val_mask = np.isin(U, val_users)
+    # Split data by user, unless the caller already computed explicit masks.
+    test_mask = np.isin(U, test_users) if test_mask is None else test_mask
+    val_mask = np.isin(U, val_users) if val_mask is None else val_mask
     train_mask = ~(test_mask | val_mask)
 
     X_train, Y_train = X[train_mask], Y[train_mask]

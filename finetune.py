@@ -162,6 +162,12 @@ FOLDS = [
     {"test": [7, 8], "val": [1, 2]},
 ]
 
+# run_finetune_pooled(): fallback split fractions for a pooled dataset that
+# doesn't have >=4 distinct users to hold out by identity (see the random
+# per-window split branch below).
+WINDOW_SPLIT_TEST_FRAC = 0.2
+WINDOW_SPLIT_VAL_FRAC = 0.2
+
 # Zero-shot: Common activity mapping (6 classes)
 ZEROSHOT_DATASETS = ["dsads", "mhealth", "pamap2"]
 ZEROSHOT_SUPPORT = ["forthtrace", "realdisp", "realworld", "selfback", "ward"]
@@ -825,27 +831,55 @@ def run_finetune_pooled(args):
         ds, _, raw = u.partition("::")
         dataset_raw_users[ds].add(raw)
 
+    ds_prefix = np.array([u.split("::", 1)[0] for u in U])
+
     test_users, val_users = [], []
+    # Extra per-window overrides for datasets that don't have >=4 distinct
+    # users -- a per-user split is impossible for them, so instead of
+    # raising, fall back to a random per-window split within that dataset
+    # only. This does NOT invent fake user identities; it just means that
+    # dataset's held-out split isn't subject-independent the way every other
+    # pooled dataset's is (there aren't enough real subjects to make it so).
+    window_split_test_mask = np.zeros(len(U), dtype=bool)
+    window_split_val_mask = np.zeros(len(U), dtype=bool)
+    window_split_datasets = []
+
     for pair in pairs:
         ds = pair["dataset"]
         raw_ids = sorted(dataset_raw_users[ds], key=int)
         if len(raw_ids) < 4:
-            raise ValueError(
-                f"{ds}: only {len(raw_ids)} distinct users found in pooled data, "
-                f"need >=4 for a 2 test + 2 val pooled split"
-            )
+            window_split_datasets.append(ds)
+            ds_indices = np.where(ds_prefix == ds)[0]
+            rng = np.random.RandomState(SEED)
+            perm = rng.permutation(ds_indices)
+            n = len(perm)
+            n_test = max(1, round(n * WINDOW_SPLIT_TEST_FRAC))
+            n_val = max(1, round(n * WINDOW_SPLIT_VAL_FRAC))
+            window_split_test_mask[perm[:n_test]] = True
+            window_split_val_mask[perm[n_test:n_test + n_val]] = True
+            continue
         test_users += [f"{ds}::{u}" for u in raw_ids[:2]]
         val_users += [f"{ds}::{u}" for u in raw_ids[2:4]]
+
+    test_mask = np.isin(U, test_users) | window_split_test_mask
+    val_mask = np.isin(U, val_users) | window_split_val_mask
 
     log(f"\n{'='*60}")
     log(f"Pooled split (2 test + 2 val users per dataset, position-based): "
         f"test={test_users}, val={val_users}")
+    if window_split_datasets:
+        log(f"Datasets with <4 distinct users, using random per-window split "
+            f"instead ({WINDOW_SPLIT_TEST_FRAC:.0%} test / {WINDOW_SPLIT_VAL_FRAC:.0%} val, "
+            f"seed={SEED}): {window_split_datasets} "
+            f"(test={int(window_split_test_mask.sum())} windows, "
+            f"val={int(window_split_val_mask.sum())} windows)")
     log(f"{'='*60}")
 
     train_loader, val_loader, test_loader = create_dataloaders(
         X, Y, U, test_users, val_users,
         batch_size=args.batch_size, data_ratio=args.data_ratio,
-        max_samples_per_epoch=args.max_samples_per_epoch
+        max_samples_per_epoch=args.max_samples_per_epoch,
+        test_mask=test_mask, val_mask=val_mask,
     )
 
     result, model = train_model(
