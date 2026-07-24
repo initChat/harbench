@@ -1091,7 +1091,7 @@ Examples:
     # Create dataloaders (train/val split)
     log("Creating dataloaders...")
     log(f"Epochs: {args.epochs}, Batch size: {args.batch_size}, Epoch size: {args.epoch_size}")
-    train_loader, val_loader = create_pretrain_dataloaders(
+    train_loader, val_loader, skipped_datasets = create_pretrain_dataloaders(
         datasets=args.datasets,
         sensors=args.sensors,
         data_root=args.data_root,
@@ -1180,6 +1180,9 @@ Examples:
         "sensors": args.sensors,
         "seed": args.seed,
         "resume_from": args.resume_from,
+        "requested_datasets": args.datasets,
+        "skipped_datasets": skipped_datasets,
+        "checkpoint_path": os.path.join(output_dir, "best.pth"),
         "hyperparameters": {
             "epochs": args.epochs,
             "batch_size": args.batch_size,

@@ -567,17 +567,21 @@ def collect_pretrain_files(datasets, sensors=None, data_root=None, modality="ACC
 
     Returns:
         file_paths: List of npy file paths
+        skipped_datasets: List of requested dataset names that did not resolve
+            to an on-disk directory (tolerant skip, not raised as an error)
     """
     if data_root is None:
         data_root = DEFAULT_DATA_ROOT
 
     file_paths = []
+    skipped_datasets = []
 
     for dataset in datasets:
         # dataset_path = os.path.join(data_root, dataset.lower())
         dataset_path = _resolve_dataset_dir(data_root, dataset)
         if not os.path.exists(dataset_path):
             print(f"Warning: {dataset_path} not found, skipping")
+            skipped_datasets.append(dataset)
             continue
 
         users = sorted([d for d in os.listdir(dataset_path) if d.startswith("USER")])
@@ -599,7 +603,7 @@ def collect_pretrain_files(datasets, sensors=None, data_root=None, modality="ACC
                 if os.path.exists(x_path):
                     file_paths.append(x_path)
 
-    return file_paths
+    return file_paths, skipped_datasets
 
 
 def create_pretrain_dataloaders(datasets, sensors, data_root=None, modality="ACC",
@@ -623,11 +627,11 @@ def create_pretrain_dataloaders(datasets, sensors, data_root=None, modality="ACC
         files_per_batch: Number of files to read simultaneously (4, same as LS-HAR)
 
     Returns:
-        train_loader, val_loader
+        train_loader, val_loader, skipped_datasets
     """
     import random
 
-    file_paths = collect_pretrain_files(datasets, sensors, data_root, modality)
+    file_paths, skipped_datasets = collect_pretrain_files(datasets, sensors, data_root, modality)
 
     if not file_paths:
         raise ValueError("No data files found for pretraining")
@@ -668,4 +672,4 @@ def create_pretrain_dataloaders(datasets, sensors, data_root=None, modality="ACC
         drop_last=True,
     )
 
-    return train_loader, val_loader
+    return train_loader, val_loader, skipped_datasets
