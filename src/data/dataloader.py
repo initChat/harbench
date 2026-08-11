@@ -370,7 +370,7 @@ def load_pooled_datasets(pairs, modality="ACC"):
 
 def create_dataloaders(X, Y, U, test_users, val_users, batch_size=64, num_workers=0, data_ratio=1.0,
                        use_weighted_sampler=True, max_samples_per_epoch=None,
-                       test_mask=None, val_mask=None):
+                       test_mask=None, val_mask=None, return_source_id=False):
     """
     Create DataLoaders for train/val/test.
 
@@ -389,9 +389,16 @@ def create_dataloaders(X, Y, U, test_users, val_users, batch_size=64, num_worker
             callers use this when a per-user split isn't possible for part of the
             pooled data (e.g. run_finetune_pooled()'s random per-window fallback).
         val_mask: Precomputed boolean val mask (N,), overrides val_users if given.
+        return_source_id: When True, derive a per-sample source-dataset id from U's
+            "<dataset>::<user>" prefix (same string this function already splits for
+            the weighted sampler), thread it into each HARDataset so batches carry a
+            3rd (source_id) element, and additionally return a {dataset_name: int}
+            id map as a 4th return value. Default off -- existing 3-tuple-unpacking
+            callers are unaffected.
 
     Returns:
         train_loader, val_loader, test_loader
+        train_loader, val_loader, test_loader, dataset_id_map  (if return_source_id=True)
     """
     from collections import Counter
 
@@ -400,9 +407,42 @@ def create_dataloaders(X, Y, U, test_users, val_users, batch_size=64, num_worker
     val_mask = np.isin(U, val_users) if val_mask is None else val_mask
     train_mask = ~(test_mask | val_mask)
 
+    # A caller-supplied test_users/val_users list that doesn't match any raw
+    # ID actually present in U (e.g. finetune.py's FOLDS hardcodes 1-8, but
+    # har70plus at some data_roots uses raw ids 501-518) used to silently
+    # produce an empty val/test split here -- train_mask would be all-True
+    # and training would proceed on 100% of the data with no error, only
+    # surfacing later as a metrics crash or silently-meaningless test_f1/acc
+    # computed on zero samples. Fail loudly at the actual point of mismatch
+    # instead, with enough detail to fix the call site (pass explicit
+    # test_mask/val_mask, or --custom_test_users/--custom_val_users where
+    # the caller supports it).
+    if not test_mask.any():
+        raise ValueError(
+            f"create_dataloaders: test_users={test_users!r} matches none of the raw user IDs "
+            f"present in U (sample of actual IDs: {sorted(set(np.unique(U)))[:10]!r}) -- "
+            "empty test split. Pass IDs that exist in this dataset, or provide test_mask explicitly."
+        )
+    if not val_mask.any():
+        raise ValueError(
+            f"create_dataloaders: val_users={val_users!r} matches none of the raw user IDs "
+            f"present in U (sample of actual IDs: {sorted(set(np.unique(U)))[:10]!r}) -- "
+            "empty val split. Pass IDs that exist in this dataset, or provide val_mask explicitly."
+        )
+
     X_train, Y_train = X[train_mask], Y[train_mask]
     X_val, Y_val = X[val_mask], Y[val_mask]
     X_test, Y_test = X[test_mask], Y[test_mask]
+
+    dataset_id_map = None
+    source_id_train = source_id_val = source_id_test = None
+    if return_source_id:
+        ds_prefix_all = np.array([str(u).split("::", 1)[0] if "::" in str(u) else "" for u in U])
+        dataset_id_map = {name: i for i, name in enumerate(sorted(set(ds_prefix_all.tolist())))}
+        ds_id_all = np.array([dataset_id_map[name] for name in ds_prefix_all], dtype=np.int64)
+        source_id_train = ds_id_all[train_mask]
+        source_id_val = ds_id_all[val_mask]
+        source_id_test = ds_id_all[test_mask]
 
     # Save original training data count (for samples_per_epoch calculation in few-shot)
     n_train_original = len(X_train)
@@ -433,11 +473,13 @@ def create_dataloaders(X, Y, U, test_users, val_users, batch_size=64, num_worker
         indices = np.array(selected_indices)
         X_train = X_train[indices]
         Y_train = Y_train[indices]
+        if source_id_train is not None:
+            source_id_train = source_id_train[indices]
 
     # Create datasets
-    train_dataset = HARDataset(X_train, Y_train)
-    val_dataset = HARDataset(X_val, Y_val)
-    test_dataset = HARDataset(X_test, Y_test)
+    train_dataset = HARDataset(X_train, Y_train, source_id=source_id_train)
+    val_dataset = HARDataset(X_val, Y_val, source_id=source_id_val)
+    test_dataset = HARDataset(X_test, Y_test, source_id=source_id_test)
 
     # Use WeightedRandomSampler to correct class imbalance, keyed by (source
     # dataset, class) rather than class alone -- with pooled training data
@@ -502,6 +544,8 @@ def create_dataloaders(X, Y, U, test_users, val_users, batch_size=64, num_worker
         pin_memory=True,
     )
 
+    if return_source_id:
+        return train_loader, val_loader, test_loader, dataset_id_map
     return train_loader, val_loader, test_loader
 
 

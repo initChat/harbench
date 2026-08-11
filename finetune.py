@@ -53,7 +53,8 @@ from src.models import (
     LIMUBert, IMUVideoMAE,
     SelfPAB, MultiDeviceMaskedResnet, MultiDeviceResnetCPC,
 )
-from src.utils import macro_f1_score, accuracy
+from src.utils import macro_f1_score, accuracy, per_class_f1
+from src.losses.supcon import ProjectionHead, SupConLoss
 
 # Optional imports for foundation models
 try:
@@ -264,15 +265,30 @@ def set_seed(seed: int):
     torch.backends.cudnn.benchmark = False
 
 
-def train_epoch(model, loader, criterion, optimizer, device, model_type="resnet", max_iterations=None):
+def train_epoch(model, loader, criterion, optimizer, device, model_type="resnet", max_iterations=None,
+                 loss_mode="ce", scl_weight=1.0, scl_criterion=None, projection_head=None,
+                 target_source_id=None):
+    """loss_mode="ce_scl" expects `loader` to yield (inputs, labels, source_id) batches
+    (i.e. its dataset was built with return_source_id=True) and requires model_type to
+    be a plain backbone+TwoLayerClassifier model ("patchtst"/"moment" foundation-model
+    wrappers don't expose return_features and aren't supported in this mode).
+    L_CE is computed only on samples whose source_id == target_source_id (the target
+    dataset); L_SCL only on the remaining (source/baseline) samples. Either term is
+    skipped (contributes 0) if its subset is empty in a given batch, rather than
+    raising on a degenerate mini-batch."""
     model.train()
     total_loss = 0.0
     total = 0
 
-    for i, (inputs, labels) in enumerate(tqdm(loader, desc="Training", leave=False)):
+    for i, batch in enumerate(tqdm(loader, desc="Training", leave=False)):
         if max_iterations is not None and i >= max_iterations:
             break
 
+        if loss_mode == "ce_scl":
+            inputs, labels, source_id = batch
+            source_id = source_id.to(device)
+        else:
+            inputs, labels = batch
         inputs, labels = inputs.to(device), labels.to(device)
         optimizer.zero_grad()
 
@@ -283,10 +299,27 @@ def train_epoch(model, loader, criterion, optimizer, device, model_type="resnet"
             outputs = model(inputs).prediction_logits
         elif model_type == "moment":
             outputs = model.forward(x_enc=inputs).logits
+        elif loss_mode == "ce_scl":
+            outputs, features = model(inputs, return_features=True)
         else:
             outputs = model(inputs)
 
-        loss = criterion(outputs, labels)
+        if loss_mode == "ce_scl":
+            target_mask = source_id == target_source_id
+            source_mask = ~target_mask
+            ce_loss = (
+                criterion(outputs[target_mask], labels[target_mask])
+                if target_mask.any() else outputs.new_zeros(())
+            )
+            if source_mask.any():
+                projected = projection_head(features[source_mask])
+                scl_loss = scl_criterion(projected, labels[source_mask])
+            else:
+                scl_loss = outputs.new_zeros(())
+            loss = ce_loss + scl_weight * scl_loss
+        else:
+            loss = criterion(outputs, labels)
+
         loss.backward()
         optimizer.step()
         total_loss += loss.item() * inputs.size(0)
@@ -295,14 +328,25 @@ def train_epoch(model, loader, criterion, optimizer, device, model_type="resnet"
     return total_loss / total if total > 0 else 0
 
 
-def evaluate(model, loader, criterion, device, model_type="resnet"):
+def evaluate(model, loader, criterion, device, model_type="resnet", loss_mode="ce", target_source_id=None,
+             return_per_class=False):
+    """loss_mode="ce_scl": `loader` yields (inputs, labels, source_id) batches; the
+    reported loss is CE over target-dataset samples only (falling back to the whole
+    batch if none are present), matching train_epoch's L_CE term. F1/accuracy are
+    always computed over every sample in the loader, unaffected by loss_mode."""
     model.eval()
     total_loss = 0.0
+    total_loss_count = 0
     all_preds = []
     all_labels = []
 
     with torch.no_grad():
-        for inputs, labels in loader:
+        for batch in loader:
+            if loss_mode == "ce_scl":
+                inputs, labels, source_id = batch
+                source_id = source_id.to(device)
+            else:
+                inputs, labels = batch
             inputs, labels = inputs.to(device), labels.to(device)
 
             # Special handling for foundation models
@@ -314,18 +358,30 @@ def evaluate(model, loader, criterion, device, model_type="resnet"):
             else:
                 outputs = model(inputs)
 
-            loss = criterion(outputs, labels)
-            total_loss += loss.item() * inputs.size(0)
+            if loss_mode == "ce_scl":
+                target_mask = source_id == target_source_id
+                loss_labels = labels[target_mask] if target_mask.any() else labels
+                loss_outputs = outputs[target_mask] if target_mask.any() else outputs
+                loss = criterion(loss_outputs, loss_labels)
+                total_loss += loss.item() * loss_labels.size(0)
+                total_loss_count += loss_labels.size(0)
+            else:
+                loss = criterion(outputs, labels)
+                total_loss += loss.item() * inputs.size(0)
+                total_loss_count += inputs.size(0)
+
             _, predicted = torch.max(outputs, 1)
             all_preds.extend(predicted.cpu().numpy())
             all_labels.extend(labels.cpu().numpy())
 
     all_preds = np.array(all_preds)
     all_labels = np.array(all_labels)
-    loss = total_loss / len(all_labels) if len(all_labels) > 0 else 0
+    loss = total_loss / total_loss_count if total_loss_count > 0 else 0
     f1 = macro_f1_score(all_labels, all_preds)
     acc = accuracy(all_labels, all_preds)
 
+    if return_per_class:
+        return loss, f1, acc, per_class_f1(all_labels, all_preds)
     return loss, f1, acc
 
 
@@ -446,11 +502,26 @@ def _extract_backbone_state_dict(model, model_type):
 
 def train_model(train_loader, val_loader, test_loader, n_classes, num_sensors,
                 weights_path, device, args, model_type="resnet", log_func=None,
-                return_backbone=False):
-    """Train and evaluate a model."""
+                return_backbone=False, target_source_id=None):
+    """Train and evaluate a model.
+
+    `args.loss_mode == "ce_scl"` requires `target_source_id` (the int id, from
+    create_dataloaders(return_source_id=True)'s dataset_id_map, of the target
+    dataset within the pool) and only supports plain backbone+TwoLayerClassifier
+    models -- raises on "patchtst"/"moment", which don't expose return_features.
+    """
     if log_func is None:
         log_func = print
     in_channels = num_sensors * 3
+    loss_mode = getattr(args, "loss_mode", "ce")
+    if loss_mode == "ce_scl" and model_type in ("patchtst", "moment"):
+        raise NotImplementedError(
+            f"loss_mode='ce_scl' is not supported for model_type={model_type!r} "
+            "(foundation-model wrappers don't expose return_features); use a "
+            "resnet-family model_type instead."
+        )
+    if loss_mode == "ce_scl" and target_source_id is None:
+        raise ValueError("loss_mode='ce_scl' requires target_source_id")
 
     # Special handling for foundation models that don't use backbone + classifier pattern
     if model_type == "patchtst":
@@ -482,7 +553,16 @@ def train_model(train_loader, val_loader, test_loader, n_classes, num_sensors,
         model = TwoLayerClassifier(backbone, n_classes=n_classes)
         model = model.to(device)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-5)
+    projection_head = None
+    scl_criterion = None
+    if loss_mode == "ce_scl":
+        projection_head = ProjectionHead(model.backbone.output_dim).to(device)
+        scl_criterion = SupConLoss(temperature=getattr(args, "scl_temperature", 0.1))
+
+    optimizer_params = list(model.parameters())
+    if projection_head is not None:
+        optimizer_params += list(projection_head.parameters())
+    optimizer = torch.optim.Adam(optimizer_params, lr=args.lr, weight_decay=1e-5)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
     criterion = nn.CrossEntropyLoss()
 
@@ -494,10 +574,18 @@ def train_model(train_loader, val_loader, test_loader, n_classes, num_sensors,
     start_time = time.time()
 
     max_iter = getattr(args, 'max_iterations', None)
+    scl_weight = getattr(args, "scl_weight", 1.0)
     for epoch in range(args.epochs):
         epoch_start = time.time()
-        train_loss = train_epoch(model, train_loader, criterion, optimizer, device, model_type, max_iterations=max_iter)
-        val_loss, val_f1, val_acc = evaluate(model, val_loader, criterion, device, model_type)
+        train_loss = train_epoch(
+            model, train_loader, criterion, optimizer, device, model_type, max_iterations=max_iter,
+            loss_mode=loss_mode, scl_weight=scl_weight, scl_criterion=scl_criterion,
+            projection_head=projection_head, target_source_id=target_source_id,
+        )
+        val_loss, val_f1, val_acc = evaluate(
+            model, val_loader, criterion, device, model_type,
+            loss_mode=loss_mode, target_source_id=target_source_id,
+        )
         epoch_time = time.time() - epoch_start
         total_time = time.time() - start_time
 
@@ -525,13 +613,20 @@ def train_model(train_loader, val_loader, test_loader, n_classes, num_sensors,
     if best_model_state is not None:
         model.load_state_dict(best_model_state)
 
-    test_loss, test_f1, test_acc = evaluate(model, test_loader, criterion, device, model_type)
+    test_loss, test_f1, test_acc, test_f1_per_class = evaluate(
+        model, test_loader, criterion, device, model_type,
+        loss_mode=loss_mode, target_source_id=target_source_id, return_per_class=True,
+    )
 
     metrics = {
         "test_f1": float(test_f1),
         "test_acc": float(test_acc),
         "test_loss": float(test_loss),
         "best_val_f1": float(best_val_f1),
+        # Auxiliary metric, logged unconditionally (not just under loss_mode="ce_scl")
+        # so it's available from a pipeline's very first trial onward, before any
+        # macro-F1 -> per-class-F1 reward-scalarization switch needs it.
+        "test_f1_per_class": [float(v) for v in test_f1_per_class],
     }
 
     if return_backbone:
@@ -875,12 +970,33 @@ def run_finetune_pooled(args):
             f"val={int(window_split_val_mask.sum())} windows)")
     log(f"{'='*60}")
 
-    train_loader, val_loader, test_loader = create_dataloaders(
-        X, Y, U, test_users, val_users,
-        batch_size=args.batch_size, data_ratio=args.data_ratio,
-        max_samples_per_epoch=args.max_samples_per_epoch,
-        test_mask=test_mask, val_mask=val_mask,
-    )
+    loss_mode = getattr(args, "loss_mode", "ce")
+    dataset_id_map = None
+    target_source_id = None
+    if loss_mode == "ce_scl":
+        train_loader, val_loader, test_loader, dataset_id_map = create_dataloaders(
+            X, Y, U, test_users, val_users,
+            batch_size=args.batch_size, data_ratio=args.data_ratio,
+            max_samples_per_epoch=args.max_samples_per_epoch,
+            test_mask=test_mask, val_mask=val_mask,
+            return_source_id=True,
+        )
+        target_dataset = getattr(args, "target_dataset", None)
+        if not target_dataset:
+            raise ValueError("loss_mode='ce_scl' requires --target_dataset")
+        if target_dataset not in dataset_id_map:
+            raise KeyError(
+                f"--target_dataset {target_dataset!r} not found among pooled manifest "
+                f"datasets {sorted(dataset_id_map)!r}"
+            )
+        target_source_id = dataset_id_map[target_dataset]
+    else:
+        train_loader, val_loader, test_loader = create_dataloaders(
+            X, Y, U, test_users, val_users,
+            batch_size=args.batch_size, data_ratio=args.data_ratio,
+            max_samples_per_epoch=args.max_samples_per_epoch,
+            test_mask=test_mask, val_mask=val_mask,
+        )
 
     result, model = train_model(
         train_loader, val_loader, test_loader,
@@ -889,6 +1005,7 @@ def run_finetune_pooled(args):
         model_type=model_type,
         log_func=log,
         return_backbone=True,
+        target_source_id=target_source_id,
     )
 
     log(f"Result: F1={result['test_f1']:.4f}, Acc={result['test_acc']:.4f}")
@@ -909,6 +1026,8 @@ def run_finetune_pooled(args):
         "seed": args.seed,
         "n_classes": n_classes,
         "num_sensors": num_sensors,
+        "loss_mode": loss_mode,
+        "target_dataset": getattr(args, "target_dataset", None),
         "hyperparameters": {
             "epochs": args.epochs,
             "batch_size": args.batch_size,
@@ -918,6 +1037,8 @@ def run_finetune_pooled(args):
             "scheduler": "CosineAnnealingLR",
             "optimizer": "Adam",
             "data_ratio": args.data_ratio,
+            "scl_weight": getattr(args, "scl_weight", None) if loss_mode == "ce_scl" else None,
+            "scl_temperature": getattr(args, "scl_temperature", None) if loss_mode == "ce_scl" else None,
         },
         "split": {"test": test_users, "val": val_users},
         "result": result,
@@ -1426,12 +1547,30 @@ Examples:
                              "Omitting this preserves today's behavior exactly (FOLDS[0]).")
     parser.add_argument("--custom_val_users", type=int, nargs="+", default=None,
                         help="Paired with --custom_test_users -- see its help.")
+    parser.add_argument("--loss_mode", type=str, default="ce", choices=["ce", "ce_scl"],
+                        help="'ce' (default): plain cross-entropy. 'ce_scl': cross-entropy on "
+                             "--target_dataset's own pooled samples plus a supervised contrastive "
+                             "loss on the remaining (source/baseline) pooled samples. Only "
+                             "supported together with --baseline_manifest and a resnet-family "
+                             "--model (not patchtst/moment).")
+    parser.add_argument("--target_dataset", type=str, default=None,
+                        help="Required with --loss_mode ce_scl: the 'dataset' name (matching one "
+                             "entry's \"dataset\" field in --baseline_manifest) whose samples get "
+                             "the L_CE term; all other pooled entries get the L_SCL term.")
+    parser.add_argument("--scl_weight", type=float, default=1.0,
+                        help="Weight on the L_SCL term when --loss_mode ce_scl (L = L_CE + scl_weight * L_SCL).")
+    parser.add_argument("--scl_temperature", type=float, default=0.1,
+                        help="SupConLoss temperature when --loss_mode ce_scl.")
     args = parser.parse_args()
 
     if args.save_backbone and not (args.single_split or args.baseline_manifest):
         parser.error("--save_backbone requires --single_split or --baseline_manifest")
     if args.single_split and args.baseline_manifest:
         parser.error("--single_split and --baseline_manifest are mutually exclusive")
+    if args.loss_mode == "ce_scl" and not args.baseline_manifest:
+        parser.error("--loss_mode ce_scl requires --baseline_manifest")
+    if args.loss_mode == "ce_scl" and not args.target_dataset:
+        parser.error("--loss_mode ce_scl requires --target_dataset")
     if bool(args.custom_test_users) != bool(args.custom_val_users):
         parser.error("--custom_test_users and --custom_val_users must be given together")
     if args.custom_test_users and not args.single_split:

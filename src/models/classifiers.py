@@ -35,13 +35,15 @@ class TwoLayerClassifier(nn.Module):
             nn.Linear(hidden_dim, n_classes, bias=False),
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, return_features: bool = False):
         """
         Args:
             x: Input tensor (batch_size, channels, sequence_length)
+            return_features: If True, also return the flattened backbone features
+                (pre-classifier), e.g. for a contrastive-loss projection head.
 
         Returns:
-            Logits (batch_size, n_classes)
+            Logits (batch_size, n_classes), or (logits, features) if return_features.
         """
         # Extract features
         features = self.backbone(x)
@@ -50,7 +52,10 @@ class TwoLayerClassifier(nn.Module):
         features = features.reshape(features.size(0), -1)
 
         # Classify
-        return self.classifier(features)
+        logits = self.classifier(features)
+        if return_features:
+            return logits, features
+        return logits
 
 
 class ThreeLayerClassifier(nn.Module):
