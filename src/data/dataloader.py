@@ -310,7 +310,18 @@ def load_pooled_datasets(pairs, modality="ACC"):
     Args:
         pairs: list of dicts, each with keys "dataset", "sensors", "data_root"
                -- the same shape as the manifest finetune.py's pooled-training
-               CLI mode is expected to consume (design 4).
+               CLI mode is expected to consume (design 4). A pair may also
+               carry an optional "label_map" ({class_idx (int or str) ->
+               name}, JSON-safe) supplied by the caller -- when present, it's
+               used in place of this module's own
+               dataset_info.py/dataset_taxonomy.py-derived mapping for that
+               pair only (opt-in, additive; pairs without it are unaffected
+               and keep going through _class_idx_to_taxonomy_group as
+               before). This lets a caller whose own preprocessing diverges
+               from dataset_info.py's schema for a given dataset (e.g.
+               optimal_subset_selection's capture24, which dataset_info.py
+               still describes with a stale 4-class schema) supply its own
+               accurate idx->name mapping instead of hard-crashing here.
         modality: passed through to load_dataset() for every pair.
 
     Returns:
@@ -336,16 +347,21 @@ def load_pooled_datasets(pairs, modality="ACC"):
 
         X, Y_idx, U = load_dataset(dataset, sensors, data_root, modality=modality)
 
-        idx_to_group = _class_idx_to_taxonomy_group(dataset)
+        caller_label_map = pair.get("label_map")
+        if caller_label_map is not None:
+            idx_to_group = {int(k): v for k, v in caller_label_map.items()}
+            source_desc = "the caller-supplied label_map"
+        else:
+            idx_to_group = _class_idx_to_taxonomy_group(dataset)
+            source_desc = "dataset_info.py's labels"
         try:
             groups = np.array([idx_to_group[y] for y in Y_idx.tolist()])
         except KeyError as e:
             raise ValueError(
                 f"{dataset}: class index {e} from Y.npy has no entry in "
-                f"dataset_info.py's labels for this dataset -- either an "
-                f"unmapped label or a USABLE_CLASSES-remapped index (pooling "
-                f"only supports datasets whose indices match dataset_info.py "
-                f"directly)"
+                f"{source_desc} for this dataset -- either an unmapped label "
+                f"or a USABLE_CLASSES-remapped index (pooling only supports "
+                f"datasets whose indices match {source_desc} directly)"
             ) from e
 
         # "undefined" (null/transition labels) is an expected drop, not a
@@ -604,9 +620,15 @@ def collect_pretrain_files(datasets, sensors=None, data_root=None, modality="ACC
     Collect file paths for pretraining.
 
     Args:
-        datasets: List of dataset names
+        datasets: List of dataset names, OR list of {"dataset": name, "data_root": path}
+            dicts for datasets that don't all share one flat `data_root` (e.g. a
+            node-split preprocessed layout where each dataset's real directory lives
+            under a different node subdir) -- same pair shape load_pooled_datasets()
+            already uses for finetune.py's --baseline_manifest. A dict entry's own
+            "data_root" always wins; `data_root` below is only the fallback for plain
+            name entries (or a dict entry that omits "data_root").
         sensors: List of sensor names (None = auto-detect all sensors)
-        data_root: Data root path
+        data_root: Data root path, used for any entry that doesn't supply its own
         modality: Modality
 
     Returns:
@@ -614,15 +636,18 @@ def collect_pretrain_files(datasets, sensors=None, data_root=None, modality="ACC
         skipped_datasets: List of requested dataset names that did not resolve
             to an on-disk directory (tolerant skip, not raised as an error)
     """
-    if data_root is None:
-        data_root = DEFAULT_DATA_ROOT
-
     file_paths = []
     skipped_datasets = []
 
-    for dataset in datasets:
-        # dataset_path = os.path.join(data_root, dataset.lower())
-        dataset_path = _resolve_dataset_dir(data_root, dataset)
+    for entry in datasets:
+        if isinstance(entry, dict):
+            dataset = entry["dataset"]
+            entry_root = entry.get("data_root") or data_root or DEFAULT_DATA_ROOT
+        else:
+            dataset = entry
+            entry_root = data_root or DEFAULT_DATA_ROOT
+
+        dataset_path = _resolve_dataset_dir(entry_root, dataset)
         if not os.path.exists(dataset_path):
             print(f"Warning: {dataset_path} not found, skipping")
             skipped_datasets.append(dataset)
@@ -658,9 +683,10 @@ def create_pretrain_dataloaders(datasets, sensors, data_root=None, modality="ACC
     Create train/val DataLoaders for pretraining.
 
     Args:
-        datasets: List of dataset names
+        datasets: List of dataset names, OR list of {"dataset", "data_root"} dicts --
+            see collect_pretrain_files()'s docstring
         sensors: List of sensor names
-        data_root: Data root path
+        data_root: Data root path (fallback for entries that don't supply their own)
         modality: Modality
         batch_size: Batch size (number of windows to read from one file)
         num_workers: Number of workers

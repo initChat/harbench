@@ -1037,7 +1037,17 @@ Examples:
         "--data_root",
         type=str,
         default=None,
-        help=f"Data root path (default: {DEFAULT_PRETRAIN_DATA_ROOT})"
+        help=f"Data root path (default: {DEFAULT_PRETRAIN_DATA_ROOT}). Ignored for any dataset "
+             "covered by --dataset_manifest."
+    )
+    parser.add_argument(
+        "--dataset_manifest",
+        type=str,
+        default=None,
+        help="Path to a JSON manifest (list of {\"dataset\": name, \"data_root\": path} pairs) for "
+             "datasets that don't all share one flat --data_root -- e.g. a node-split preprocessed "
+             "layout. Overrides --datasets/--data_root when given (same {dataset, data_root} pair "
+             "shape finetune.py's --baseline_manifest uses, minus \"sensors\")."
     )
     parser.add_argument("--device", type=str, default="cuda:0", help="Device")
     parser.add_argument("--epochs", type=int, default=200, help="Number of epochs")
@@ -1053,7 +1063,10 @@ Examples:
     args = parser.parse_args()
 
     # Apply defaults
-    if args.datasets is None:
+    if args.dataset_manifest:
+        with open(args.dataset_manifest) as f:
+            args.datasets = json.load(f)  # list of {"dataset": name, "data_root": path} pairs
+    elif args.datasets is None:
         args.datasets = DEFAULT_PRETRAIN_DATASETS
     if args.data_root is None:
         args.data_root = DEFAULT_PRETRAIN_DATA_ROOT
