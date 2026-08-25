@@ -8,7 +8,7 @@ import numpy as np
 from sklearn.metrics import f1_score, accuracy_score, confusion_matrix
 
 
-def macro_f1_score(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+def macro_f1_score(y_true: np.ndarray, y_pred: np.ndarray, labels=None) -> float:
     """
     Compute macro-averaged F1 score.
 
@@ -18,11 +18,16 @@ def macro_f1_score(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     Args:
         y_true: Ground truth labels (N,)
         y_pred: Predicted labels (N,)
+        labels: optional explicit label set (e.g. range(n_classes)) -- pass this
+            when y_true/y_pred may not cover every class (e.g. a single
+            dataset's slice of a pooled label space), so a missing class
+            scores 0 instead of silently shrinking the averaged/per-class
+            result.
 
     Returns:
         Macro F1 score (0.0 to 1.0)
     """
-    return f1_score(y_true, y_pred, average='macro')
+    return f1_score(y_true, y_pred, average='macro', labels=labels)
 
 
 def accuracy(y_true: np.ndarray, y_pred: np.ndarray) -> float:
@@ -39,18 +44,20 @@ def accuracy(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     return accuracy_score(y_true, y_pred)
 
 
-def per_class_f1(y_true: np.ndarray, y_pred: np.ndarray) -> np.ndarray:
+def per_class_f1(y_true: np.ndarray, y_pred: np.ndarray, labels=None) -> np.ndarray:
     """
     Compute F1 score for each class.
 
     Args:
         y_true: Ground truth labels (N,)
         y_pred: Predicted labels (N,)
+        labels: optional explicit label set (e.g. range(n_classes)) -- see
+            macro_f1_score's labels docstring.
 
     Returns:
         F1 score for each class
     """
-    return f1_score(y_true, y_pred, average=None)
+    return f1_score(y_true, y_pred, average=None, labels=labels)
 
 
 def compute_confusion_matrix(y_true: np.ndarray, y_pred: np.ndarray) -> np.ndarray:

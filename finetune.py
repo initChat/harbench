@@ -320,6 +320,14 @@ def train_epoch(model, loader, criterion, optimizer, device, model_type="resnet"
         else:
             loss = criterion(outputs, labels)
 
+        # A degenerate ce_scl batch (e.g. the loader's trailing partial batch
+        # is a single non-target sample) can leave BOTH ce_loss and scl_loss
+        # as disconnected new_zeros() fallbacks -- their sum has no grad_fn,
+        # which crashes loss.backward(). Such a batch carries no learning
+        # signal either way, so skip the step instead of raising.
+        if not loss.requires_grad:
+            continue
+
         loss.backward()
         optimizer.step()
         total_loss += loss.item() * inputs.size(0)
@@ -329,16 +337,25 @@ def train_epoch(model, loader, criterion, optimizer, device, model_type="resnet"
 
 
 def evaluate(model, loader, criterion, device, model_type="resnet", loss_mode="ce", target_source_id=None,
-             return_per_class=False):
-    """loss_mode="ce_scl": `loader` yields (inputs, labels, source_id) batches; the
-    reported loss is CE over target-dataset samples only (falling back to the whole
-    batch if none are present), matching train_epoch's L_CE term. F1/accuracy are
-    always computed over every sample in the loader, unaffected by loss_mode."""
+             return_per_class=False, n_classes=None):
+    """loss_mode="ce_scl": `loader` yields (inputs, labels, source_id) batches. Both
+    the reported loss AND F1/accuracy/per-class-F1 are computed over target-dataset
+    samples only (falling back to every sample in the loader if the target
+    contributes none), matching train_epoch's L_CE term -- so a trial's reported
+    metrics reflect the target dataset alone, not the pooled baseline+target set
+    (see optimal_subset_selection .claude/260825_task.md task 1: F1 used to be
+    pooled-wide regardless of loss_mode, which mis-scoped every downstream reward).
+    n_classes, when given, fixes the returned per-class-F1 vector to that length
+    (0.0 for a class absent from the target's slice) so it stays a stable-shape,
+    stable-index vector regardless of which classes the target's test split
+    happens to contain."""
     model.eval()
     total_loss = 0.0
     total_loss_count = 0
     all_preds = []
     all_labels = []
+    target_preds = []
+    target_labels = []
 
     with torch.no_grad():
         for batch in loader:
@@ -373,15 +390,22 @@ def evaluate(model, loader, criterion, device, model_type="resnet", loss_mode="c
             _, predicted = torch.max(outputs, 1)
             all_preds.extend(predicted.cpu().numpy())
             all_labels.extend(labels.cpu().numpy())
+            if loss_mode == "ce_scl" and target_mask.any():
+                target_preds.extend(predicted[target_mask].cpu().numpy())
+                target_labels.extend(labels[target_mask].cpu().numpy())
+
+    if loss_mode == "ce_scl" and target_labels:
+        all_preds, all_labels = target_preds, target_labels
 
     all_preds = np.array(all_preds)
     all_labels = np.array(all_labels)
     loss = total_loss / total_loss_count if total_loss_count > 0 else 0
-    f1 = macro_f1_score(all_labels, all_preds)
+    labels_arg = list(range(n_classes)) if n_classes is not None else None
+    f1 = macro_f1_score(all_labels, all_preds, labels=labels_arg)
     acc = accuracy(all_labels, all_preds)
 
     if return_per_class:
-        return loss, f1, acc, per_class_f1(all_labels, all_preds)
+        return loss, f1, acc, per_class_f1(all_labels, all_preds, labels=labels_arg)
     return loss, f1, acc
 
 
@@ -584,7 +608,7 @@ def train_model(train_loader, val_loader, test_loader, n_classes, num_sensors,
         )
         val_loss, val_f1, val_acc = evaluate(
             model, val_loader, criterion, device, model_type,
-            loss_mode=loss_mode, target_source_id=target_source_id,
+            loss_mode=loss_mode, target_source_id=target_source_id, n_classes=n_classes,
         )
         epoch_time = time.time() - epoch_start
         total_time = time.time() - start_time
@@ -615,7 +639,7 @@ def train_model(train_loader, val_loader, test_loader, n_classes, num_sensors,
 
     test_loss, test_f1, test_acc, test_f1_per_class = evaluate(
         model, test_loader, criterion, device, model_type,
-        loss_mode=loss_mode, target_source_id=target_source_id, return_per_class=True,
+        loss_mode=loss_mode, target_source_id=target_source_id, return_per_class=True, n_classes=n_classes,
     )
 
     metrics = {
