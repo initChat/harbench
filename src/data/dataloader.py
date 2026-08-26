@@ -297,6 +297,29 @@ def _class_idx_to_taxonomy_group(dataset_name):
     return {idx: label_to_group[label] for idx, label in idx_to_label.items() if idx != -1}
 
 
+def _resolve_idx_to_group(dataset_name, label_map=None):
+    """{class_idx: canonical_taxonomy_group} for one dataset -- the
+    caller-supplied label_map override when given, else
+    _class_idx_to_taxonomy_group()'s dataset_info.py/dataset_taxonomy.py
+    derivation. Shared by load_pooled_datasets()'s per-pair loop and
+    dataset_group_names() so there's one resolution path."""
+    if label_map is not None:
+        return {int(k): v for k, v in label_map.items()}
+    return _class_idx_to_taxonomy_group(dataset_name)
+
+
+def dataset_group_names(dataset_name, label_map=None):
+    """The set of canonical taxonomy groups a single dataset can produce
+    (excludes "undefined"), using the same idx_to_group resolution
+    load_pooled_datasets() applies per-pair -- the caller-supplied label_map
+    override included. Used by finetune.py's run_finetune_pooled() to score
+    a pooled trial's F1 against the target dataset's own classes only,
+    instead of the full pooled taxonomy (see .claude/260826_task.md reward
+    dilution fix)."""
+    idx_to_group = _resolve_idx_to_group(dataset_name, label_map)
+    return {group for group in idx_to_group.values() if group != "undefined"}
+
+
 def load_pooled_datasets(pairs, modality="ACC"):
     """
     Load and pool several selected baseline (dataset, sensors, data_root) pairs
@@ -348,12 +371,8 @@ def load_pooled_datasets(pairs, modality="ACC"):
         X, Y_idx, U = load_dataset(dataset, sensors, data_root, modality=modality)
 
         caller_label_map = pair.get("label_map")
-        if caller_label_map is not None:
-            idx_to_group = {int(k): v for k, v in caller_label_map.items()}
-            source_desc = "the caller-supplied label_map"
-        else:
-            idx_to_group = _class_idx_to_taxonomy_group(dataset)
-            source_desc = "dataset_info.py's labels"
+        idx_to_group = _resolve_idx_to_group(dataset, caller_label_map)
+        source_desc = "the caller-supplied label_map" if caller_label_map is not None else "dataset_info.py's labels"
         try:
             groups = np.array([idx_to_group[y] for y in Y_idx.tolist()])
         except KeyError as e:

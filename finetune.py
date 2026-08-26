@@ -46,7 +46,7 @@ from torch.utils.data import DataLoader, WeightedRandomSampler
 from tqdm import tqdm
 
 # All imports from artifact/src (standalone, no parent directory dependency)
-from src.data.dataloader import load_dataset, load_pooled_datasets, create_dataloaders
+from src.data.dataloader import load_dataset, load_pooled_datasets, create_dataloaders, dataset_group_names
 from src.data.dataset import HARDataset
 from src.models import (
     Resnet, NDeviceResnet, TwoLayerClassifier,
@@ -337,7 +337,7 @@ def train_epoch(model, loader, criterion, optimizer, device, model_type="resnet"
 
 
 def evaluate(model, loader, criterion, device, model_type="resnet", loss_mode="ce", target_source_id=None,
-             return_per_class=False, n_classes=None):
+             return_per_class=False, n_classes=None, eval_label_ids=None):
     """loss_mode="ce_scl": `loader` yields (inputs, labels, source_id) batches. Both
     the reported loss AND F1/accuracy/per-class-F1 are computed over target-dataset
     samples only (falling back to every sample in the loader if the target
@@ -345,10 +345,16 @@ def evaluate(model, loader, criterion, device, model_type="resnet", loss_mode="c
     metrics reflect the target dataset alone, not the pooled baseline+target set
     (see optimal_subset_selection .claude/260825_task.md task 1: F1 used to be
     pooled-wide regardless of loss_mode, which mis-scoped every downstream reward).
-    n_classes, when given, fixes the returned per-class-F1 vector to that length
-    (0.0 for a class absent from the target's slice) so it stays a stable-shape,
-    stable-index vector regardless of which classes the target's test split
-    happens to contain."""
+
+    eval_label_ids, when given, is the exact label set macro_f1/per-class-F1 are
+    scored and averaged over -- pass the target dataset's own class ids here (see
+    run_finetune_pooled's target_label_ids), NOT the full pooled taxonomy, or
+    every class only a baseline can have silently drags macro_f1 down by a factor
+    that depends on how many baselines got pooled, not on target performance (see
+    .claude/260826_task.md reward dilution fix). Falls back to n_classes (the
+    classifier head size, i.e. the full pooled taxonomy) when eval_label_ids isn't
+    given -- e.g. non-ce_scl callers where there's no single "target" to restrict to.
+    """
     model.eval()
     total_loss = 0.0
     total_loss_count = 0
@@ -400,7 +406,10 @@ def evaluate(model, loader, criterion, device, model_type="resnet", loss_mode="c
     all_preds = np.array(all_preds)
     all_labels = np.array(all_labels)
     loss = total_loss / total_loss_count if total_loss_count > 0 else 0
-    labels_arg = list(range(n_classes)) if n_classes is not None else None
+    if eval_label_ids is not None:
+        labels_arg = eval_label_ids
+    else:
+        labels_arg = list(range(n_classes)) if n_classes is not None else None
     f1 = macro_f1_score(all_labels, all_preds, labels=labels_arg)
     acc = accuracy(all_labels, all_preds)
 
@@ -526,13 +535,18 @@ def _extract_backbone_state_dict(model, model_type):
 
 def train_model(train_loader, val_loader, test_loader, n_classes, num_sensors,
                 weights_path, device, args, model_type="resnet", log_func=None,
-                return_backbone=False, target_source_id=None):
+                return_backbone=False, target_source_id=None, eval_label_ids=None):
     """Train and evaluate a model.
 
     `args.loss_mode == "ce_scl"` requires `target_source_id` (the int id, from
     create_dataloaders(return_source_id=True)'s dataset_id_map, of the target
     dataset within the pool) and only supports plain backbone+TwoLayerClassifier
     models -- raises on "patchtst"/"moment", which don't expose return_features.
+
+    eval_label_ids: forwarded to every evaluate() call (both the per-epoch
+    val-F1 used for early stopping/checkpoint selection, and the final test
+    F1) -- see evaluate()'s docstring. Keeps checkpoint selection and the
+    final reported metrics scored against the same class set.
     """
     if log_func is None:
         log_func = print
@@ -609,6 +623,7 @@ def train_model(train_loader, val_loader, test_loader, n_classes, num_sensors,
         val_loss, val_f1, val_acc = evaluate(
             model, val_loader, criterion, device, model_type,
             loss_mode=loss_mode, target_source_id=target_source_id, n_classes=n_classes,
+            eval_label_ids=eval_label_ids,
         )
         epoch_time = time.time() - epoch_start
         total_time = time.time() - start_time
@@ -640,6 +655,7 @@ def train_model(train_loader, val_loader, test_loader, n_classes, num_sensors,
     test_loss, test_f1, test_acc, test_f1_per_class = evaluate(
         model, test_loader, criterion, device, model_type,
         loss_mode=loss_mode, target_source_id=target_source_id, return_per_class=True, n_classes=n_classes,
+        eval_label_ids=eval_label_ids,
     )
 
     metrics = {
@@ -997,6 +1013,7 @@ def run_finetune_pooled(args):
     loss_mode = getattr(args, "loss_mode", "ce")
     dataset_id_map = None
     target_source_id = None
+    target_label_ids = None
     if loss_mode == "ce_scl":
         train_loader, val_loader, test_loader, dataset_id_map = create_dataloaders(
             X, Y, U, test_users, val_users,
@@ -1014,6 +1031,19 @@ def run_finetune_pooled(args):
                 f"datasets {sorted(dataset_id_map)!r}"
             )
         target_source_id = dataset_id_map[target_dataset]
+
+        # Score macro_f1/per-class-F1 against only the target's own classes,
+        # not the full pooled taxonomy (group_names spans target + every
+        # baseline in this trial's manifest) -- see evaluate()'s docstring
+        # and .claude/260826_task.md: scoring against the pooled taxonomy
+        # made macro_f1 diluted by how many baselines got pooled, not by
+        # target performance.
+        target_pair = next(p for p in pairs if p["dataset"] == target_dataset)
+        target_groups = dataset_group_names(target_dataset, target_pair.get("label_map"))
+        group_to_idx = {g: i for i, g in enumerate(group_names)}
+        target_label_ids = sorted(group_to_idx[g] for g in target_groups if g in group_to_idx)
+        log(f"Scoring against target's own classes: {len(target_label_ids)}/{n_classes} "
+            f"({[group_names[i] for i in target_label_ids]})")
     else:
         train_loader, val_loader, test_loader = create_dataloaders(
             X, Y, U, test_users, val_users,
@@ -1030,6 +1060,7 @@ def run_finetune_pooled(args):
         log_func=log,
         return_backbone=True,
         target_source_id=target_source_id,
+        eval_label_ids=target_label_ids,
     )
 
     log(f"Result: F1={result['test_f1']:.4f}, Acc={result['test_acc']:.4f}")
@@ -1052,6 +1083,8 @@ def run_finetune_pooled(args):
         "num_sensors": num_sensors,
         "loss_mode": loss_mode,
         "target_dataset": getattr(args, "target_dataset", None),
+        "target_label_ids": target_label_ids,
+        "target_group_names": [group_names[i] for i in target_label_ids] if target_label_ids is not None else None,
         "hyperparameters": {
             "epochs": args.epochs,
             "batch_size": args.batch_size,
