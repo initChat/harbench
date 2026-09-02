@@ -13,6 +13,7 @@ No pytest in this env -- plain asserts, run directly:
 
 import os
 import sys
+from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -291,6 +292,52 @@ def test_ce_mode_backward_compatible():
     print("test_ce_mode_backward_compatible: PASS")
 
 
+def test_dataset_weights_sampler():
+    """dataset_weights must scale each source dataset's total per-epoch draw
+    mass roughly proportional to its requested weight -- the sampler-based
+    fix replacing weighted_pool.py's old physical-file-trimming approach,
+    which broke down below its MIN_USERS=4 floor (see
+    optimal_subset_selection/.claude/260831_plan_dataloader_loadWeight_to_harbench.md).
+    dsA and dsB have equal class counts here, so the (dataset, class)-grouping
+    multiplier documented in create_dataloaders' docstring cancels out and the
+    expected fraction should equal the normalized dataset_weights directly."""
+    X, Y, U = make_synthetic_pool(n_per_user=30, n_classes=3)
+    test_users = ["dsA::5", "dsA::6", "dsB::5", "dsB::6"]
+    val_users = ["dsA::3", "dsA::4", "dsB::3", "dsB::4"]
+
+    dataset_weights = {"dsA": 0.2, "dsB": 0.8}
+    logged = []
+    train_loader, _, _, dataset_id_map = create_dataloaders(
+        X, Y, U, test_users, val_users, batch_size=32, num_workers=0,
+        return_source_id=True, dataset_weights=dataset_weights, log_func=logged.append,
+    )
+    assert any("expected per-dataset sampling fraction" in msg for msg in logged)
+
+    counts = Counter()
+    for _ in range(30):
+        for _, _, source_id in train_loader:
+            counts.update(source_id.tolist())
+    total = sum(counts.values())
+    frac_dsA = counts[dataset_id_map["dsA"]] / total
+    frac_dsB = counts[dataset_id_map["dsB"]] / total
+    assert abs(frac_dsA - 0.2) < 0.03, f"frac_dsA={frac_dsA}"
+    assert abs(frac_dsB - 0.8) < 0.03, f"frac_dsB={frac_dsB}"
+
+    # dataset_weights=None (default) must be byte-for-byte the old uniform
+    # (dataset, class) balancing -- no regression for every other call site.
+    train_loader_default, _, _, _ = create_dataloaders(
+        X, Y, U, test_users, val_users, batch_size=32, num_workers=0, return_source_id=True,
+    )
+    counts_default = Counter()
+    for _ in range(30):
+        for _, _, source_id in train_loader_default:
+            counts_default.update(source_id.tolist())
+    total_default = sum(counts_default.values())
+    frac_dsA_default = counts_default[dataset_id_map["dsA"]] / total_default
+    assert abs(frac_dsA_default - 0.5) < 0.03, f"frac_dsA_default={frac_dsA_default}"
+    print("test_dataset_weights_sampler: PASS")
+
+
 if __name__ == "__main__":
     test_hardataset_source_id()
     test_create_dataloaders_return_source_id()
@@ -299,4 +346,5 @@ if __name__ == "__main__":
     test_train_epoch_evaluate_ce_scl_smoke()
     test_eval_label_ids_restricts_scoring()
     test_ce_mode_backward_compatible()
+    test_dataset_weights_sampler()
     print("\nAll CE+SCL tests passed.")

@@ -657,6 +657,16 @@ def train_model(train_loader, val_loader, test_loader, n_classes, num_sensors,
         loss_mode=loss_mode, target_source_id=target_source_id, return_per_class=True, n_classes=n_classes,
         eval_label_ids=eval_label_ids,
     )
+    # Per-class val F1 on the same frozen best_model_state, alongside the
+    # scalar best_val_f1 already tracked per-epoch above -- lets a caller use
+    # validation performance (not test_f1) as a reward/comparison signal
+    # without an extra ad hoc split (see .claude/260902_task.md task 5 and
+    # run_finetune_pooled's --target_val_users handling).
+    _, _, _, val_f1_per_class = evaluate(
+        model, val_loader, criterion, device, model_type,
+        loss_mode=loss_mode, target_source_id=target_source_id, return_per_class=True, n_classes=n_classes,
+        eval_label_ids=eval_label_ids,
+    )
 
     metrics = {
         "test_f1": float(test_f1),
@@ -667,6 +677,7 @@ def train_model(train_loader, val_loader, test_loader, n_classes, num_sensors,
         # so it's available from a pipeline's very first trial onward, before any
         # macro-F1 -> per-class-F1 reward-scalarization switch needs it.
         "test_f1_per_class": [float(v) for v in test_f1_per_class],
+        "val_f1_per_class": [float(v) for v in val_f1_per_class],
     }
 
     if return_backbone:
@@ -908,6 +919,73 @@ def run_finetune_single_split(args):
 # Mode: Finetune (pooled multi-baseline)
 # =============================================================================
 
+def _pooled_train_val_test_masks(pairs, U, target_dataset=None, target_val_users=None):
+    """Position-based 2-test+2-val-users-per-dataset split (falling back to a
+    random per-window split for datasets with <4 distinct users) -- see
+    run_finetune_pooled's inline comments for the full rationale (FOLDS[0]'s
+    literal ids assume every preprocessed dataset uses raw user ids 1..8,
+    which is false in practice). Shared by run_finetune_pooled and
+    run_finetune_multi_candidate so this fairly intricate rule has exactly
+    one implementation.
+
+    target_dataset/target_val_users: when both are given, `target_dataset`'s
+    val role is pinned to `target_val_users` (e.g. optimal_subset_selection's
+    held_out.reserve_target() val_ids) instead of this function's own
+    auto-picked "next 2 sorted ids" -- and it gets no auto test role at all
+    (search-time reward should come from validation performance, not a 4th,
+    undeclared subject role -- see .claude/260902_task.md task 5). Every
+    other pair (every baseline) keeps the auto-pick untouched.
+
+    Returns (test_mask, val_mask, test_users, val_users, window_split_datasets).
+    """
+    dataset_raw_users = defaultdict(set)
+    for u in U:
+        ds, _, raw = u.partition("::")
+        dataset_raw_users[ds].add(raw)
+    ds_prefix = np.array([u.split("::", 1)[0] for u in U])
+
+    test_users, val_users = [], []
+    window_split_test_mask = np.zeros(len(U), dtype=bool)
+    window_split_val_mask = np.zeros(len(U), dtype=bool)
+    window_split_datasets = []
+    for pair in pairs:
+        ds = pair["dataset"]
+        if target_val_users is not None and ds == target_dataset:
+            val_users += [f"{ds}::{uid}" for uid in target_val_users]
+            continue
+        raw_ids = sorted(dataset_raw_users[ds], key=int)
+        if len(raw_ids) < 4:
+            window_split_datasets.append(ds)
+            ds_indices = np.where(ds_prefix == ds)[0]
+            rng = np.random.RandomState(SEED)
+            perm = rng.permutation(ds_indices)
+            n = len(perm)
+            n_test = max(1, round(n * WINDOW_SPLIT_TEST_FRAC))
+            n_val = max(1, round(n * WINDOW_SPLIT_VAL_FRAC))
+            window_split_test_mask[perm[:n_test]] = True
+            window_split_val_mask[perm[n_test:n_test + n_val]] = True
+            continue
+        test_users += [f"{ds}::{u}" for u in raw_ids[:2]]
+        val_users += [f"{ds}::{u}" for u in raw_ids[2:4]]
+
+    test_mask = np.isin(U, test_users) | window_split_test_mask
+    val_mask = np.isin(U, val_users) | window_split_val_mask
+    return test_mask, val_mask, test_users, val_users, window_split_datasets
+
+
+def _resolve_target_label_ids(target_dataset, pairs, group_names):
+    """Label ids (indices into group_names) belonging to target_dataset only
+    -- scores ce_scl macro_f1/per-class-F1 against just the target's own
+    classes, not the full pooled taxonomy (see run_finetune_pooled's inline
+    comments and .claude/260826_task.md: scoring against the pooled taxonomy
+    made macro_f1 diluted by how many baselines got pooled, not by target
+    performance). Shared by run_finetune_pooled and run_finetune_multi_candidate."""
+    target_pair = next(p for p in pairs if p["dataset"] == target_dataset)
+    target_groups = dataset_group_names(target_dataset, target_pair.get("label_map"))
+    group_to_idx = {g: i for i, g in enumerate(group_names)}
+    return sorted(group_to_idx[g] for g in target_groups if g in group_to_idx)
+
+
 def run_finetune_pooled(args):
     """Fine-tune once on data pooled from multiple baseline (dataset, sensors,
     data_root) pairs, listed in a manifest file, instead of a single dataset.
@@ -946,6 +1024,13 @@ def run_finetune_pooled(args):
     log(f"Loading pooled datasets from manifest: {args.baseline_manifest}")
     log(f"Pairs: {[(p['dataset'], p['sensors']) for p in pairs]}")
 
+    dataset_weights = None
+    if getattr(args, "use_manifest_weights", False):
+        dataset_weights = {
+            p["dataset"]: p["weight"]["requested"] for p in pairs if "weight" in p
+        }
+        log(f"--use_manifest_weights: dataset_weights={dataset_weights}")
+
     # Load and pool data
     X, Y, U, group_names = load_pooled_datasets(pairs)
     log(f"Data shape: X={X.shape}, Y={Y.shape}, U={U.shape}")
@@ -960,44 +1045,20 @@ def run_finetune_pooled(args):
     # splits. Instead, reserve the first 2 sorted raw user ids per dataset for
     # test and the next 2 for val -- position-based, so every pooled dataset
     # still contributes exactly 2 test + 2 val users regardless of its actual
-    # id numbering.
-    dataset_raw_users = defaultdict(set)
-    for u in U:
-        ds, _, raw = u.partition("::")
-        dataset_raw_users[ds].add(raw)
-
-    ds_prefix = np.array([u.split("::", 1)[0] for u in U])
-
-    test_users, val_users = [], []
-    # Extra per-window overrides for datasets that don't have >=4 distinct
-    # users -- a per-user split is impossible for them, so instead of
-    # raising, fall back to a random per-window split within that dataset
-    # only. This does NOT invent fake user identities; it just means that
-    # dataset's held-out split isn't subject-independent the way every other
-    # pooled dataset's is (there aren't enough real subjects to make it so).
-    window_split_test_mask = np.zeros(len(U), dtype=bool)
-    window_split_val_mask = np.zeros(len(U), dtype=bool)
-    window_split_datasets = []
-
-    for pair in pairs:
-        ds = pair["dataset"]
-        raw_ids = sorted(dataset_raw_users[ds], key=int)
-        if len(raw_ids) < 4:
-            window_split_datasets.append(ds)
-            ds_indices = np.where(ds_prefix == ds)[0]
-            rng = np.random.RandomState(SEED)
-            perm = rng.permutation(ds_indices)
-            n = len(perm)
-            n_test = max(1, round(n * WINDOW_SPLIT_TEST_FRAC))
-            n_val = max(1, round(n * WINDOW_SPLIT_VAL_FRAC))
-            window_split_test_mask[perm[:n_test]] = True
-            window_split_val_mask[perm[n_test:n_test + n_val]] = True
-            continue
-        test_users += [f"{ds}::{u}" for u in raw_ids[:2]]
-        val_users += [f"{ds}::{u}" for u in raw_ids[2:4]]
-
-    test_mask = np.isin(U, test_users) | window_split_test_mask
-    val_mask = np.isin(U, val_users) | window_split_val_mask
+    # id numbering. Extra per-window overrides for datasets that don't have
+    # >=4 distinct users -- a per-user split is impossible for them, so
+    # instead of raising, fall back to a random per-window split within that
+    # dataset only. This does NOT invent fake user identities; it just means
+    # that dataset's held-out split isn't subject-independent the way every
+    # other pooled dataset's is (there aren't enough real subjects to make it
+    # so). See _pooled_train_val_test_masks().
+    test_mask, val_mask, test_users, val_users, window_split_datasets = (
+        _pooled_train_val_test_masks(
+            pairs, U,
+            target_dataset=getattr(args, "target_dataset", None),
+            target_val_users=getattr(args, "target_val_users", None),
+        )
+    )
 
     log(f"\n{'='*60}")
     log(f"Pooled split (2 test + 2 val users per dataset, position-based): "
@@ -1021,6 +1082,7 @@ def run_finetune_pooled(args):
             max_samples_per_epoch=args.max_samples_per_epoch,
             test_mask=test_mask, val_mask=val_mask,
             return_source_id=True,
+            dataset_weights=dataset_weights, log_func=log,
         )
         target_dataset = getattr(args, "target_dataset", None)
         if not target_dataset:
@@ -1037,11 +1099,8 @@ def run_finetune_pooled(args):
         # baseline in this trial's manifest) -- see evaluate()'s docstring
         # and .claude/260826_task.md: scoring against the pooled taxonomy
         # made macro_f1 diluted by how many baselines got pooled, not by
-        # target performance.
-        target_pair = next(p for p in pairs if p["dataset"] == target_dataset)
-        target_groups = dataset_group_names(target_dataset, target_pair.get("label_map"))
-        group_to_idx = {g: i for i, g in enumerate(group_names)}
-        target_label_ids = sorted(group_to_idx[g] for g in target_groups if g in group_to_idx)
+        # target performance. See _resolve_target_label_ids().
+        target_label_ids = _resolve_target_label_ids(target_dataset, pairs, group_names)
         log(f"Scoring against target's own classes: {len(target_label_ids)}/{n_classes} "
             f"({[group_names[i] for i in target_label_ids]})")
     else:
@@ -1063,7 +1122,23 @@ def run_finetune_pooled(args):
         eval_label_ids=target_label_ids,
     )
 
-    log(f"Result: F1={result['test_f1']:.4f}, Acc={result['test_acc']:.4f}")
+    target_val_users = getattr(args, "target_val_users", None)
+    if target_val_users is not None:
+        # test_loader now holds zero target samples (the target's val role was
+        # pinned above, so it got no auto test role at all) -- evaluate()'s
+        # target-only scoring would otherwise silently fall back to scoring
+        # over every sample in the loader (i.e. baseline classes) and mislabel
+        # that as the target's test_f1. Null it out rather than report a
+        # number that looks like a target metric but isn't one.
+        for key in ("test_f1", "test_f1_per_class", "test_acc", "test_loss"):
+            result[key] = None
+        log("--target_val_users set: target has no search-time test role, so "
+            "test_f1/test_f1_per_class/test_acc/test_loss are nulled out here "
+            "(would otherwise silently score baseline classes) -- use "
+            "best_val_f1/val_f1_per_class instead.")
+        log(f"Result: val_F1={result['best_val_f1']:.4f}")
+    else:
+        log(f"Result: F1={result['test_f1']:.4f}, Acc={result['test_acc']:.4f}")
 
     if args.save_backbone:
         os.makedirs(os.path.dirname(args.save_backbone) or ".", exist_ok=True)
@@ -1110,6 +1185,223 @@ def run_finetune_pooled(args):
     log(f"\nResults saved to: {results_path}")
     log_file.close()
     return results
+
+
+# =============================================================================
+# Mode: Multi-candidate (native winner + companions, held-out eval, one process)
+# =============================================================================
+
+def run_finetune_multi_candidate(args):
+    """Native replacement for optimal_subset_selection/candidate_ablation.py's
+    external orchestration: one process trains+held-out-evaluates
+    prior_backbone plus N candidates (winner + companions) against the SAME
+    already-loaded target data, instead of 2*(N+1) separate finetune.py
+    subprocess launches (candidate_ablation.py's design) each reloading
+    pooled dataset arrays from disk with no reuse across candidates.
+
+    --candidates_manifest_json: path to a JSON list of {"candidate_id", "S",
+    "w", "manifest"}. "manifest" is exactly manifest_builder.build_manifest()'s
+    existing [{dataset, sensors, data_root, label_map}, ...] shape -- the
+    same contract --baseline_manifest's file content already has, just
+    inlined per candidate instead of one file per trial. "S"/"w" ride along
+    purely as report metadata: this function never resolves a raw subset+
+    weight into a manifest itself (rank_md parsing, label-map resolution,
+    weighted-view symlinking) -- that stays an optimal_subset_selection-only
+    concern, kept out of this repo's standalone/no-parent-dependency design.
+
+    --dataset/--sensors/--data_root here are the target's FULL (non-search-
+    view) data root -- held-out subjects must be physically present so
+    --custom_test_users/--custom_val_users can exclude them from training
+    and test only on them (same contract held_out.run_held_out_eval() used).
+    --weights is the prior pretrained backbone every candidate's pooled
+    trial starts from (same role as candidate_ablation.py's --weights).
+
+    Determinism: unlike the old per-candidate-subprocess design (a fresh
+    process gets a fresh seed automatically), everything here runs in one
+    process, so set_seed(args.seed) is re-called before every train_model()
+    call below -- without it, RNG state would carry over between stages and
+    make results run-order-dependent, breaking parity with the old numbers.
+    GPU memory: explicit `del model` + torch.cuda.empty_cache() after each
+    stage, since 2*(N+1) models now train sequentially in one process
+    instead of in separate processes that each get memory reclaimed on exit.
+    """
+    device = torch.device(args.device if torch.cuda.is_available() else "cpu")
+
+    model_config = MODELS.get(args.model, MODELS["resnet"])
+    model_type = model_config["type"]
+
+    prior_weights_path = args.weights
+    if prior_weights_path is None and "weights" in model_config:
+        prior_weights_path = model_config["weights"]
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_name = f"{timestamp}_{args.model}"
+    output_dir = os.path.join(args.output_dir, run_name)
+    os.makedirs(output_dir, exist_ok=True)
+
+    log_path = os.path.join(output_dir, "log.txt")
+    log_file = open(log_path, "w")
+
+    def log(msg):
+        print(msg)
+        log_file.write(msg + "\n")
+        log_file.flush()
+
+    log(f"Using device: {device}")
+    log(f"Model: {args.model} ({model_config['description']})")
+    log(f"Prior backbone: {prior_weights_path or 'scratch (random init)'}")
+    log(f"Target (held-out eval): {args.dataset}, sensors={args.sensors}")
+
+    with open(args.candidates_manifest_json) as f:
+        candidates = json.load(f)
+
+    # Target's full data, loaded ONCE and reused for every held-out-eval
+    # stage below (prior_backbone's and every candidate's) -- the main
+    # efficiency win over candidate_ablation.py's per-candidate subprocess
+    # reloads.
+    X_t, Y_t, U_t = load_dataset(args.dataset, args.sensors, args.data_root)
+    log(f"Target data shape: X={X_t.shape}, Y={Y_t.shape}, U={U_t.shape}")
+    n_classes_t = len(np.unique(Y_t))
+    num_sensors_t = len(args.sensors)
+    held_out_fold = {"test": args.custom_test_users, "val": args.custom_val_users}
+    log(f"Held-out fold: test_users={held_out_fold['test']}, val_users={held_out_fold['val']}")
+
+    def _held_out_eval(weights_path, tag):
+        """Same single-split finetune+eval held_out.run_held_out_eval()
+        already does as a subprocess: fine-tune `weights_path` once more on
+        everyone except held_out_fold's test/val users, test ONLY on the
+        held-out (test) users. Plain CE (not ce_scl) -- a single-dataset
+        finetune has no source/baseline pool to run SCL against."""
+        set_seed(args.seed)
+        args.loss_mode = "ce"
+        train_loader, val_loader, test_loader = create_dataloaders(
+            X_t, Y_t, U_t, held_out_fold["test"], held_out_fold["val"],
+            batch_size=args.batch_size, data_ratio=args.data_ratio,
+            max_samples_per_epoch=args.max_samples_per_epoch,
+        )
+        result, model = train_model(
+            train_loader, val_loader, test_loader, n_classes_t, num_sensors_t,
+            weights_path, device, args, model_type=model_type,
+            log_func=log, return_backbone=True,
+        )
+        log(f"[{tag}] held-out eval: F1={result['test_f1']:.4f}, Acc={result['test_acc']:.4f}")
+        del model
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
+        return result
+
+    def _train_pooled_candidate(pairs, backbone_out_path, tag):
+        """Same CE+SCL pooled trial run_finetune_pooled/trial_runner.run_trial()
+        already do as a subprocess, given a candidate's manifest directly
+        instead of a --baseline_manifest file. train_model() reads loss_mode
+        off `args` (getattr(args, "loss_mode", "ce")), same as
+        run_finetune_pooled -- unlike that function, this mode has no
+        --loss_mode CLI flag of its own (ce_scl is the only mode a pooled
+        multi-candidate trial makes sense under), so it's set explicitly
+        here rather than left at argparse's "ce" default. Reset to "ce" by
+        _held_out_eval() before its own train_model() call, since dataloaders
+        built without return_source_id=True there yield 2-tuples, not the
+        3-tuples train_epoch's ce_scl branch expects."""
+        set_seed(args.seed)
+        args.loss_mode = "ce_scl"
+        target_dataset_name = pairs[0]["dataset"]
+        log(f"[{tag}] pairs: {[(p['dataset'], p['sensors']) for p in pairs]}")
+
+        dataset_weights = None
+        if getattr(args, "use_manifest_weights", False):
+            dataset_weights = {
+                p["dataset"]: p["weight"]["requested"] for p in pairs if "weight" in p
+            }
+            log(f"[{tag}] --use_manifest_weights: dataset_weights={dataset_weights}")
+
+        X, Y, U, group_names = load_pooled_datasets(pairs)
+        n_classes = len(group_names)
+        num_sensors = 1  # load_pooled_datasets() requires exactly one sensor per pair
+
+        test_mask, val_mask, test_users, val_users, window_split_datasets = (
+            _pooled_train_val_test_masks(
+                pairs, U,
+                target_dataset=target_dataset_name,
+                target_val_users=args.custom_val_users,
+            )
+        )
+        if window_split_datasets:
+            log(f"[{tag}] datasets with <4 distinct users, using random per-window "
+                f"split instead: {window_split_datasets}")
+
+        train_loader, val_loader, test_loader, dataset_id_map = create_dataloaders(
+            X, Y, U, test_users, val_users,
+            batch_size=args.batch_size, data_ratio=args.data_ratio,
+            max_samples_per_epoch=args.max_samples_per_epoch,
+            test_mask=test_mask, val_mask=val_mask,
+            return_source_id=True,
+            dataset_weights=dataset_weights, log_func=log,
+        )
+        if target_dataset_name not in dataset_id_map:
+            raise KeyError(
+                f"[{tag}] target dataset {target_dataset_name!r} not found among "
+                f"pooled manifest datasets {sorted(dataset_id_map)!r}"
+            )
+        target_source_id = dataset_id_map[target_dataset_name]
+        target_label_ids = _resolve_target_label_ids(target_dataset_name, pairs, group_names)
+        log(f"[{tag}] scoring against target's own classes: {len(target_label_ids)}/{n_classes}")
+
+        result, model = train_model(
+            train_loader, val_loader, test_loader, n_classes, num_sensors,
+            prior_weights_path, device, args, model_type=model_type,
+            log_func=log, return_backbone=True,
+            target_source_id=target_source_id, eval_label_ids=target_label_ids,
+        )
+        log(f"[{tag}] pooled trial: val_F1={result['best_val_f1']:.4f}")
+
+        os.makedirs(os.path.dirname(backbone_out_path) or ".", exist_ok=True)
+        torch.save(_extract_backbone_state_dict(model, model_type), backbone_out_path)
+        del model
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
+        return result
+
+    results = [{
+        "candidate_id": "prior_backbone", "weights_path": prior_weights_path, "baselines": {},
+        **_held_out_eval(prior_weights_path, "prior_backbone"),
+    }]
+    log(json.dumps(results[-1]))
+
+    for cand in candidates:
+        cid = cand["candidate_id"]
+        pairs = cand["manifest"]
+        backbone_path = os.path.join(output_dir, f"{cid}_backbone.pth")
+
+        pooled_result = _train_pooled_candidate(pairs, backbone_path, cid)
+        held_out_result = _held_out_eval(backbone_path, cid)
+
+        results.append({
+            "candidate_id": cid, "weights_path": backbone_path,
+            "baselines": dict(zip(cand["S"], cand["w"])),
+            # search-time-only signal, kept for reference -- NOT the
+            # reportable number, same caution as candidate_ablation.py's
+            # pooled_search_time_macro_f1 field. best_val_f1, not test_f1:
+            # the target now has no search-time test role once its val is
+            # pinned via --target_val_users (see _pooled_train_val_test_masks).
+            "pooled_search_time_val_f1": pooled_result["best_val_f1"],
+            **held_out_result,
+        })
+        log(json.dumps(results[-1]))
+
+    payload = {
+        "mode": "finetune_multi_candidate",
+        "dataset": args.dataset, "sensors": args.sensors,
+        "held_out_ids": args.custom_test_users, "val_ids": args.custom_val_users,
+        "candidates": results,
+        "timestamp": timestamp,
+    }
+    results_path = os.path.join(output_dir, "results.json")
+    with open(results_path, "w") as f:
+        json.dump(payload, f, indent=2)
+
+    log(f"\nResults saved to: {results_path}")
+    log_file.close()
+    return payload
 
 
 # =============================================================================
@@ -1604,6 +1896,17 @@ Examples:
                              "Omitting this preserves today's behavior exactly (FOLDS[0]).")
     parser.add_argument("--custom_val_users", type=int, nargs="+", default=None,
                         help="Paired with --custom_test_users -- see its help.")
+    parser.add_argument("--target_val_users", type=int, nargs="+", default=None,
+                        help="With --baseline_manifest/--loss_mode ce_scl: pin the TARGET "
+                             "dataset's validation users to this explicit id list instead of "
+                             "_pooled_train_val_test_masks's auto position-based pick (first-2-"
+                             "sorted-ids test / next-2 val). The target gets no auto test role "
+                             "when this is set -- search-time reward/checkpoint-selection "
+                             "should come from validation performance, not an extra ad hoc "
+                             "split; the one honest generalization check remains "
+                             "--custom_test_users at final-eval. Should be exactly the val ids "
+                             "optimal_subset_selection's held_out.reserve_target() already "
+                             "reserved for this run.")
     parser.add_argument("--loss_mode", type=str, default="ce", choices=["ce", "ce_scl"],
                         help="'ce' (default): plain cross-entropy. 'ce_scl': cross-entropy on "
                              "--target_dataset's own pooled samples plus a supervised contrastive "
@@ -1618,6 +1921,24 @@ Examples:
                         help="Weight on the L_SCL term when --loss_mode ce_scl (L = L_CE + scl_weight * L_SCL).")
     parser.add_argument("--scl_temperature", type=float, default=0.1,
                         help="SupConLoss temperature when --loss_mode ce_scl.")
+    parser.add_argument("--use_manifest_weights", action="store_true",
+                        help="With --baseline_manifest, read each pair's \"weight\":{\"requested\": "
+                             "w_i} field (written by optimal_subset_selection's/llm_mfbo_agent's "
+                             "weighted_pool.py) and scale the ce_scl weighted sampler's per-dataset "
+                             "draw mass by it, instead of pure uniform (dataset, class) balancing. "
+                             "Default off -- existing callers that don't emit a \"weight\" field are "
+                             "unaffected either way.")
+    parser.add_argument("--candidates_manifest_json", type=str, default=None,
+                        help="Path to a JSON list of {\"candidate_id\", \"S\", \"w\", \"manifest\"} "
+                             "(\"manifest\" is a --baseline_manifest-shaped [{dataset, sensors, "
+                             "data_root, label_map}, ...] list). Trains+held-out-evaluates "
+                             "--weights (as 'prior_backbone') plus every candidate in one process, "
+                             "reusing the target data loaded once via --dataset/--sensors/"
+                             "--data_root (the FULL, non-search-view root) and --custom_test_users/"
+                             "--custom_val_users as the held-out/val split. Mutually exclusive with "
+                             "--baseline_manifest/--single_split. Native replacement for "
+                             "optimal_subset_selection/candidate_ablation.py's external, "
+                             "subprocess-per-candidate orchestration.")
     args = parser.parse_args()
 
     if args.save_backbone and not (args.single_split or args.baseline_manifest):
@@ -1628,10 +1949,20 @@ Examples:
         parser.error("--loss_mode ce_scl requires --baseline_manifest")
     if args.loss_mode == "ce_scl" and not args.target_dataset:
         parser.error("--loss_mode ce_scl requires --target_dataset")
+    if args.target_val_users and not args.target_dataset:
+        parser.error("--target_val_users requires --target_dataset")
     if bool(args.custom_test_users) != bool(args.custom_val_users):
         parser.error("--custom_test_users and --custom_val_users must be given together")
-    if args.custom_test_users and not args.single_split:
-        parser.error("--custom_test_users/--custom_val_users require --single_split")
+    if args.custom_test_users and not (args.single_split or args.candidates_manifest_json):
+        parser.error("--custom_test_users/--custom_val_users require --single_split or --candidates_manifest_json")
+    if args.candidates_manifest_json and (args.single_split or args.baseline_manifest):
+        parser.error("--candidates_manifest_json is mutually exclusive with --single_split/--baseline_manifest")
+    if args.candidates_manifest_json and not (args.dataset and args.sensors and args.data_root):
+        parser.error("--candidates_manifest_json requires --dataset/--sensors/--data_root (the target's full data root)")
+    if args.candidates_manifest_json and not args.weights:
+        parser.error("--candidates_manifest_json requires --weights (the prior backbone)")
+    if args.candidates_manifest_json and not args.custom_test_users:
+        parser.error("--candidates_manifest_json requires --custom_test_users/--custom_val_users (the held-out/val split)")
 
     set_seed(args.seed)
 
@@ -1641,6 +1972,9 @@ Examples:
     elif getattr(args, 'zeroshot_supervised', False):
         args.output_dir = os.path.join(args.output_dir, "zeroshot_supervised")
         run_zeroshot_supervised(args)
+    elif args.candidates_manifest_json:
+        args.output_dir = os.path.join(args.output_dir, "finetune_multi_candidate")
+        run_finetune_multi_candidate(args)
     elif args.baseline_manifest:
         args.output_dir = os.path.join(args.output_dir, "finetune_pooled")
         run_finetune_pooled(args)

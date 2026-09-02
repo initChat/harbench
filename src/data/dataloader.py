@@ -405,7 +405,8 @@ def load_pooled_datasets(pairs, modality="ACC"):
 
 def create_dataloaders(X, Y, U, test_users, val_users, batch_size=64, num_workers=0, data_ratio=1.0,
                        use_weighted_sampler=True, max_samples_per_epoch=None,
-                       test_mask=None, val_mask=None, return_source_id=False):
+                       test_mask=None, val_mask=None, return_source_id=False,
+                       dataset_weights=None, log_func=None):
     """
     Create DataLoaders for train/val/test.
 
@@ -430,12 +431,21 @@ def create_dataloaders(X, Y, U, test_users, val_users, batch_size=64, num_worker
             3rd (source_id) element, and additionally return a {dataset_name: int}
             id map as a 4th return value. Default off -- existing 3-tuple-unpacking
             callers are unaffected.
+        dataset_weights: Optional {dataset_name: weight} to scale each source
+            dataset's total per-epoch draw mass in the weighted sampler, on top
+            of the existing (dataset, class) balancing. A dataset absent from
+            the dict defaults to weight 1.0. None (default) preserves today's
+            behavior exactly -- pure uniform (dataset, class) balancing.
+        log_func: Optional callable(str). When dataset_weights is given, used to
+            log the resulting expected per-dataset sampling fraction (see the
+            (dataset, class)-grouping nuance in the docstring below) so it can
+            be checked against the requested weights.
 
     Returns:
         train_loader, val_loader, test_loader
         train_loader, val_loader, test_loader, dataset_id_map  (if return_source_id=True)
     """
-    from collections import Counter
+    from collections import Counter, defaultdict
 
     # Split data by user, unless the caller already computed explicit masks.
     test_mask = np.isin(U, test_users) if test_mask is None else test_mask
@@ -529,7 +539,28 @@ def create_dataloaders(X, Y, U, test_users, val_users, batch_size=64, num_worker
     if use_weighted_sampler:
         train_dataset_ids = [str(u).split("::", 1)[0] if "::" in str(u) else "" for u in U[train_mask]]
         group_count = Counter(zip(train_dataset_ids, Y_train.tolist()))
-        group_weights = {group: 1.0 / count for group, count in group_count.items()}
+        if dataset_weights:
+            group_weights = {
+                group: dataset_weights.get(group[0], 1.0) / count
+                for group, count in group_count.items()
+            }
+            if log_func is not None:
+                # Per (dataset, class) group, total sampled mass = count * (w_ds / count) = w_ds,
+                # so a dataset's total mass is w_ds * (number of its distinct classes) -- see
+                # the (dataset, class)-grouping nuance in create_dataloaders' docstring.
+                ds_mass = defaultdict(float)
+                for (ds, cls), weight in group_weights.items():
+                    ds_mass[ds] += weight * group_count[(ds, cls)]
+                total_mass = sum(ds_mass.values())
+                frac_str = ", ".join(
+                    f"{ds}={mass / total_mass:.4f}" for ds, mass in sorted(ds_mass.items())
+                )
+                log_func(
+                    f"create_dataloaders: dataset_weights requested={dataset_weights} -> "
+                    f"expected per-dataset sampling fraction={{{frac_str}}}"
+                )
+        else:
+            group_weights = {group: 1.0 / count for group, count in group_count.items()}
         sample_weights = np.array([
             group_weights[(ds, y)] for ds, y in zip(train_dataset_ids, Y_train.tolist())
         ])

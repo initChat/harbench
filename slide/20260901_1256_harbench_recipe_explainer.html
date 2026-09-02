@@ -1,0 +1,429 @@
+<title>Finding the Right Recipe</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,440;9..144,600;9..144,700&family=Source+Serif+4:ital,wght@0,400;0,600;1,400&family=JetBrains+Mono:wght@400;500;700&display=swap">
+<style>
+  :root{
+    --ink:#1c2420; --paper:#f7f8f4; --paper-alt:#ebeee6; --rule:#d9ddd2; --muted:#5c6b60;
+    --accent:#1a7d68; --accent-soft:#dcefe8;
+    --gold:#8a6a24; --gold-soft:#efe6cf;
+    --crimson:#96403c; --crimson-soft:#f2ded9;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --ink:#e7ece5; --paper:#121613; --paper-alt:#1a201b; --rule:#2b332c; --muted:#93a399;
+      --accent:#4fc9ab; --accent-soft:#173a30;
+      --gold:#c9a355; --gold-soft:#332711;
+      --crimson:#d9827c; --crimson-soft:#3a1e1c;
+    }
+  }
+  :root[data-theme="dark"]{
+    --ink:#e7ece5; --paper:#121613; --paper-alt:#1a201b; --rule:#2b332c; --muted:#93a399;
+    --accent:#4fc9ab; --accent-soft:#173a30;
+    --gold:#c9a355; --gold-soft:#332711;
+    --crimson:#d9827c; --crimson-soft:#3a1e1c;
+  }
+
+  *{box-sizing:border-box;}
+  html{-webkit-text-size-adjust:100%;}
+  body{
+    margin:0; background:var(--paper); color:var(--ink);
+    font-family:"Source Serif 4", Georgia, "Times New Roman", serif;
+    font-size:17px; line-height:1.65;
+  }
+  h1,h2,h3{ font-family:"Fraunces", Georgia, serif; text-wrap:balance; color:var(--ink); }
+  .mono{ font-family:"JetBrains Mono", ui-monospace, Menlo, Consolas, monospace; }
+
+  .wrap{ max-width:880px; margin:0 auto; padding:0 24px 6rem; }
+  .col{ max-width:660px; }
+
+  /* ---------- header ---------- */
+  header.hero{
+    padding:4.2rem 0 2.6rem; border-bottom:1px solid var(--rule); margin-bottom:2.8rem;
+  }
+  .kicker{
+    font-family:"JetBrains Mono", monospace; font-size:0.78rem; letter-spacing:0.09em;
+    text-transform:uppercase; color:var(--accent); margin:0 0 1rem;
+  }
+  h1.title{ font-size:clamp(2.1rem, 5vw, 3.1rem); font-weight:700; margin:0 0 1rem; line-height:1.08; }
+  p.dek{ font-size:1.15rem; color:var(--muted); max-width:600px; margin:0 0 1.6rem; font-style:italic; }
+  .meta-row{ display:flex; flex-wrap:wrap; gap:0.5rem 1.4rem; font-size:0.86rem; color:var(--muted); }
+  .meta-row strong{ color:var(--ink); font-weight:600; }
+
+  /* ---------- structure ---------- */
+  h2{ font-size:1.55rem; font-weight:600; margin:3.4rem 0 1.1rem; padding-top:0.2rem; }
+  h2 .idx{ color:var(--accent); font-family:"JetBrains Mono",monospace; font-size:0.9rem; display:block;
+    letter-spacing:0.08em; text-transform:uppercase; margin-bottom:0.35rem; font-weight:500; }
+  h3{ font-size:1.15rem; font-weight:600; margin:1.8rem 0 0.7rem; }
+  p{ margin:0 0 1.15rem; }
+  strong{ color:var(--ink); }
+  a{ color:var(--accent); text-decoration-thickness:1.5px; text-underline-offset:2px; }
+  ul,ol{ padding-left:1.3rem; margin:0 0 1.2rem; }
+  li{ margin-bottom:0.5rem; }
+  li:last-child{ margin-bottom:0; }
+
+  nav.contents{
+    background:var(--paper-alt); border:1px solid var(--rule); border-radius:4px;
+    padding:1.3rem 1.6rem; margin:0 0 1rem;
+  }
+  nav.contents .label{ font-family:"JetBrains Mono",monospace; font-size:0.74rem; letter-spacing:0.09em;
+    text-transform:uppercase; color:var(--muted); margin-bottom:0.7rem; }
+  nav.contents ol{ columns:2; column-gap:2rem; margin:0; padding-left:1.1rem; font-size:0.93rem; }
+  nav.contents li{ margin-bottom:0.45rem; break-inside:avoid; }
+  nav.contents a{ color:var(--ink); }
+
+  /* ---------- analogy / callout boxes ---------- */
+  .analogy, .note, .sealed-note{
+    margin:0 0 1.4rem; padding:1.1rem 1.3rem; border-radius:4px; font-size:0.98rem;
+  }
+  .analogy{ background:var(--accent-soft); border-left:4px solid var(--accent); }
+  .note{ background:var(--gold-soft); border-left:4px solid var(--gold); }
+  .sealed-note{ background:var(--crimson-soft); border-left:4px solid var(--crimson); }
+  .analogy .tag, .note .tag, .sealed-note .tag{
+    display:block; font-family:"JetBrains Mono",monospace; font-size:0.7rem; letter-spacing:0.09em;
+    text-transform:uppercase; margin-bottom:0.4rem;
+  }
+  .analogy .tag{ color:var(--accent); } .note .tag{ color:var(--gold); } .sealed-note .tag{ color:var(--crimson); }
+  .analogy p:last-child, .note p:last-child, .sealed-note p:last-child{ margin-bottom:0; }
+
+  /* ---------- equations ---------- */
+  .eqbox{
+    background:var(--paper-alt); border:1px solid var(--rule); border-radius:4px;
+    padding:1.1rem 1.4rem; margin:0 0 0.9rem; overflow-x:auto;
+  }
+  .eqbox .mono{ font-size:0.98rem; white-space:pre; }
+  .eq-walk{ margin:0 0 1.6rem; padding-left:0; list-style:none; font-size:0.95rem; }
+  .eq-walk li{ margin-bottom:0.55rem; display:flex; gap:0.7rem; }
+  .eq-walk .sym{
+    font-family:"JetBrains Mono",monospace; background:var(--paper-alt); border:1px solid var(--rule);
+    border-radius:3px; padding:0.05em 0.45em; flex:0 0 auto; height:fit-content; color:var(--ink); font-size:0.88rem;
+  }
+  .worked{
+    border:1px dashed var(--rule); border-radius:4px; padding:1rem 1.3rem; margin:0 0 1.5rem;
+    background:var(--paper); font-size:0.94rem;
+  }
+  .worked .tag{ font-family:"JetBrains Mono",monospace; font-size:0.7rem; letter-spacing:0.08em;
+    text-transform:uppercase; color:var(--muted); margin-bottom:0.5rem; display:block; }
+
+  /* ---------- figures ---------- */
+  figure{ margin:1.8rem 0 2rem; }
+  figure svg{ max-width:100%; height:auto; display:block; }
+  figcaption{ font-size:0.86rem; color:var(--muted); margin-top:0.7rem; line-height:1.55; }
+  .diagram-frame{
+    background:var(--paper-alt); border:1px solid var(--rule); border-radius:6px; padding:1.4rem 1.2rem;
+  }
+
+  /* ---------- glossary + cheat sheet ---------- */
+  .glossary{ display:grid; grid-template-columns:1fr; gap:0; border-top:1px solid var(--rule); }
+  .glossary dt{
+    font-family:"JetBrains Mono",monospace; font-weight:600; padding:0.85rem 0 0.15rem; color:var(--ink); font-size:0.95rem;
+  }
+  .glossary dd{ margin:0 0 0.85rem; padding-bottom:0.85rem; border-bottom:1px solid var(--rule); color:var(--muted); font-size:0.94rem; }
+  .glossary dd:last-of-type{ border-bottom:none; }
+
+  .cheat{ width:100%; border-collapse:collapse; font-size:0.92rem; margin:0 0 1.4rem; }
+  .cheat th, .cheat td{ text-align:left; padding:0.6rem 0.9rem; border-bottom:1px solid var(--rule); vertical-align:top; }
+  .cheat thead th{ font-family:"JetBrains Mono",monospace; font-size:0.72rem; text-transform:uppercase;
+    letter-spacing:0.06em; color:var(--muted); font-weight:600; background:var(--paper-alt); }
+  .cheat tr:last-child td{ border-bottom:none; }
+  .table-wrap{ overflow-x:auto; border:1px solid var(--rule); border-radius:4px; margin:0 0 1.6rem; }
+  .table-wrap .cheat{ margin:0; }
+
+  hr.sep{ border:none; border-top:1px solid var(--rule); margin:3.4rem 0 2.4rem; }
+  footer{ color:var(--muted); font-size:0.88rem; padding-top:1rem; }
+
+  @media (max-width:640px){
+    nav.contents ol{ columns:1; }
+    header.hero{ padding-top:3rem; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="hero">
+    <p class="kicker">A non-engineer's field guide</p>
+    <h1 class="title">Finding the Right Recipe</h1>
+    <p class="dek">How a wearable-sensor AI borrows other people's data to learn a new activity — and how it proves, honestly, that it actually worked.</p>
+    <div class="meta-row">
+      <span><strong>For:</strong> anyone curious, no machine-learning background assumed</span>
+      <span><strong>Read time:</strong> ~14 minutes</span>
+      <span><strong>Prereqs:</strong> basic stats (mean, standard deviation)</span>
+    </div>
+  </header>
+
+  <div class="col">
+
+    <p>Somewhere in this project sits a model that reads a phone's or watch's accelerometer and guesses what you're doing — walking, climbing stairs, cycling. Teaching it to recognize a <em>brand-new</em> activity dataset — say, sensor data from a hospital's fall-risk study — with only a handful of people wearing the sensor is hard. There isn't enough data from those few people alone to learn from scratch.</p>
+    <p>So the system cheats, in the good way: it borrows data from <em>other</em>, unrelated activity datasets that already exist, mixes them in with the new one, and trains on the mixture. The catch is that not every other dataset helps — some are noisy, some measure different activities, some were recorded with a sensor strapped to the wrong body part. This guide explains, in plain language with the real math alongside it, how the system decides <strong>which datasets to borrow from, how much of each to use, and how it proves the result isn't just a lucky guess.</strong></p>
+
+    <nav class="contents">
+      <div class="label">In this guide</div>
+      <ol>
+        <li><a href="#finetune">Teaching a generalist a specialty</a></li>
+        <li><a href="#recipe">A dataset mixture is a recipe</a></li>
+        <li><a href="#vetting">Vetting the ingredients</a></li>
+        <li><a href="#taster">The taste-testing assistant</a></li>
+        <li><a href="#exam">The sealed final exam</a></li>
+        <li><a href="#together">Watching it run end to end</a></li>
+        <li><a href="#glossary">Glossary</a></li>
+        <li><a href="#cheatsheet">One-page cheat sheet</a></li>
+      </ol>
+    </nav>
+
+    <h2><span class="idx">01</span>Teaching a generalist a specialty</h2>
+    <p>Before any of this starts, there's already a general-purpose model — a <strong>backbone</strong> — that was pretrained on a huge pile of sensor recordings, without labels, just to learn "what human movement generally looks like" as a mathematical shape (a long list of numbers per time window, called an <strong>embedding</strong>). Think of it as a generalist athlete: strong, coordinated, adaptable, but not trained for any one sport.</p>
+    <p><strong>Finetuning</strong> is the specialty training: you keep the athlete's general fitness, attach a small new "decision layer" on top (which of these specific activities is this?), and run a shorter, focused training session on the labeled data you actually care about — the new target dataset, plus whatever borrowed data helps.</p>
+    <div class="analogy">
+      <span class="tag">Analogy</span>
+      <p>It's like hiring a generalist athlete and giving them two weeks of sport-specific coaching before a specific meet, rather than raising a sport specialist from age five. The two weeks matter, but they only work because the athlete already showed up fit.</p>
+    </div>
+
+    <h2><span class="idx">02</span>A dataset mixture is a recipe</h2>
+    <p>The system doesn't just pick one borrowed dataset — it picks a <strong>subset</strong> of them and a <strong>mixture weight</strong> for each, the way a recipe names ingredients and proportions. In the code, this pair is literally called <code class="mono">(S, w)</code>: <code class="mono">S</code> is the list of chosen baseline datasets, <code class="mono">w</code> is how much of each to use, and the weights always add up to 1 (100% of the "borrowed" portion of the mix — the target dataset itself is always included at full size on top of that, since it's the thing being learned).</p>
+    <p>A "recipe" like <code class="mono">S = [HHAR, WISDM], w = [0.7, 0.3]</code> means: mostly lean on HHAR's data, season lightly with WISDM. The question the rest of this guide answers is: <strong>how does the system decide which recipes are worth actually cooking (real, expensive training runs), and which one wins?</strong></p>
+
+    <h2><span class="idx">03</span>Vetting the ingredients</h2>
+    <p>Before any recipe is even proposed, every candidate ingredient (each borrowed dataset) is scored on three completely different questions, computed by three separate stages that never talk to each other. All three numbers eventually get combined, but they're asking different things:</p>
+
+    <h3>Is the sensor recording itself trustworthy?</h3>
+    <p>A dataset can be a perfect topical match and still be useless if the sensor was miscalibrated, drifted, or drowning in noise. Each recording gets a few raw signal-quality readings (how spiky the noise is, the signal-to-noise ratio, and so on). Each one is turned into a 0-to-1 score by comparing it against two fixed reference points — a "this is about as bad as we'll tolerate" anchor and a "this is about as good as it gets" anchor:</p>
+    <div class="eqbox"><span class="mono">score = clip( (value − bad_anchor) / (good_anchor − bad_anchor),  0,  1 )</span></div>
+    <ul class="eq-walk">
+      <li><span class="sym">clip(x, 0, 1)</span><span>squash the result so it can never go below 0 or above 1, even if <code class="mono">value</code> is way outside the two anchors</span></li>
+      <li><span class="sym">value</span><span>the raw measurement for one recording (e.g. a noise-spikiness number)</span></li>
+    </ul>
+    <p>Average that across every recording in a dataset and you get one number per dataset. A dataset only gets excluded if its score falls suspiciously far below the pack — specifically, more than <strong>three standard deviations</strong> below the average of every dataset ever scored this way. That's a very lenient bar on purpose: it only catches the datasets that are dramatically worse than everything else, not merely below-average ones.</p>
+
+    <h3>Does it actually look similar to the target?</h3>
+    <p>Datasets that pass the quality check next get compared directly against the new target dataset, in the backbone's embedding space (remember — that long list of numbers per time window). Two measurements do the comparing: one asks "does the target's data form a clean, separate cluster from this baseline's data, or do they blur together?" and the other measures the raw statistical distance between the two datasets' embeddings. Both get turned into a fair, comparable score using a very standard trick from statistics: a <strong>z-score</strong>.</p>
+    <div class="eqbox"><span class="mono">z = (this baseline's value − average of all <em>other</em> baselines' values) / (their standard deviation)</span></div>
+    <p>A z-score answers "how many standard deviations from typical is this one?" — it's the same idea as saying a test score was "1.5 standard deviations above the class average," just applied to a similarity measurement instead of a grade. Averaging the two z-scored measurements together gives one <strong>similarity score</strong> per baseline dataset.</p>
+
+    <h3>Does it mean the same thing?</h3>
+    <p>Two datasets can share a label like "walking" and still not mean the same thing — one recorded on a treadmill, one recorded outdoors on uneven ground; one strapped to a wrist, one strapped to an ankle. This is a judgment call, not arithmetic, so the system asks an AI language model to read a short structured description of both datasets (their activities, where the sensor sits, how the study was run) and assign a 0-to-1 "these are semantically compatible" score for both the activities and the sensor placement.</p>
+    <div class="note">
+      <span class="tag">Why not just count matching labels</span>
+      <p>Counting exact label matches ("walking" == "walking") is done separately and handed to the AI as a fact, not as its job. The AI's actual job is judging whether same-looking labels mean the same thing in practice — the part a simple string comparison can't do.</p>
+    </div>
+
+    <h3>Combining scores for a whole recipe</h3>
+    <p>A recipe mixes several datasets at different weights, so each of the three scores above (plus a fourth: how well a dataset has actually performed in real training runs so far) gets averaged across the whole recipe, weighted by how much of each dataset the recipe uses:</p>
+    <div class="eqbox"><span class="mono">weighted average = (Σ weight × score) / (Σ weight)</span></div>
+    <p>That gives four numbers per recipe — a compact "report card" that everything from here on treats as the recipe's identity.</p>
+
+    <h2><span class="idx">04</span>The taste-testing assistant</h2>
+    <p>Now the hard part: there could be trillions of possible recipes (any combination of dozens of datasets, at any mixture ratio), but an actual training run is slow and expensive — you can only really afford to cook, say, 40 of them. How do you pick which 40 to try?</p>
+
+    <h3>Phase one: ask an AI to reason about it</h3>
+    <p>For the first 29 attempts, an AI language model proposes one recipe per round, reading the growing log of "here's what we've tried and how it scored" plus every dataset's report card, and reasoning about what might work well together — similar to how a chef might reason from taste-test notes rather than a formula.</p>
+
+    <h3>Phase two: let a statistical "taster" take over</h3>
+    <p>From attempt 30 onward, a more mechanical process takes the wheel. First it mechanically lists out a large but bounded pool of candidate recipes (every reasonably small combination of eligible datasets, each combination tried with a few different randomly-generated mixture ratios — drawn from something called a <strong>Dirichlet distribution</strong>, which is just a principled way to generate random proportions that always add up to 100%, the way tossing a fixed amount of dough between however many bowls you're using always uses up the whole ball of dough).</p>
+    <p>Then it fits a statistical model — a <strong>Gaussian Process</strong> — to every recipe tried so far: given a recipe's four-number report card, how good was the actual result? A Gaussian Process doesn't just predict one number for an untried recipe — it predicts a <em>range</em>: "probably around here, but I'm this uncertain." For every untried recipe left in the pool, the system scores it as:</p>
+    <div class="eqbox"><span class="mono">score = (predicted result) + 1.0 × (how uncertain the prediction is)</span></div>
+    <p>and cooks whichever recipe scores highest. This rule has a name — <strong>Upper Confidence Bound</strong> — and the intuition is worth sitting with: it doesn't just chase the recipe predicted to taste best. It also rewards recipes the model is <em>unsure</em> about, because an uncertain guess might turn out to be a hidden gem. That's the classic tension in this kind of search, usually called <strong>exploration vs. exploitation</strong> — keep trying safe bets, or spend a few tries finding out about the unknown ones?</p>
+    <div class="analogy">
+      <span class="tag">Analogy</span>
+      <p>Imagine a food critic who has tried 30 dishes at a new restaurant and is asked "what should I order next?" They could recommend the dish closest to your past favorites (exploit), or a wildcard dish nobody's reviewed yet that <em>might</em> be incredible (explore). The Upper Confidence Bound rule always leans slightly toward the wildcard, on purpose — that's the <code class="mono">+ 1.0 × uncertainty</code> term.</p>
+    </div>
+
+    <h3>Scoring a cooked recipe</h3>
+    <p>Every actual training run — from either phase — gets boiled down to one number worth optimizing. Two ingredients go into it: the average per-activity accuracy score across all activities (called <strong>macro-F1</strong>, a standard way of grading a classifier that treats every activity class equally regardless of how common it is), and the score of the <em>single worst-performing</em> activity class — because an average can hide one badly-neglected activity.</p>
+    <div class="eqbox"><span class="mono">reward = 0.5 × (average accuracy across activities) + 0.5 × (worst single activity's accuracy)</span></div>
+    <div class="worked">
+      <span class="tag">Worked example</span>
+      <p>Say a recipe scores 0.80 average accuracy across five activities, but its worst activity (say, "climbing stairs") only scores 0.40. Averaging alone would report a healthy-looking 0.80 and hide the stairs problem. The actual reward is <code class="mono">0.5 × 0.80 + 0.5 × 0.40 = 0.60</code> — a real 20-point penalty for neglecting one activity, exactly the kind of blind spot the extra term exists to catch.</p>
+    </div>
+    <p>Whichever recipe — from <em>either</em> phase, an early AI-proposed one included — scored the highest reward across the whole run is declared the winner.</p>
+
+    <h2><span class="idx">05</span>The sealed final exam</h2>
+    <p>Here's the part that keeps everything above honest. Every training run needs to know which people (the study's <strong>subjects</strong>) it's allowed to learn from, and which it's only allowed to test on afterward, without ever training on their data. Two entirely separate rules decide this, and they never touch the same subjects.</p>
+
+    <div class="analogy">
+      <span class="tag">Analogy</span>
+      <p>Think of it as the difference between practice exams and the real final. Practice exams (the recipe search's own test scores) can be taken over and over, and you learn from your mistakes on them — but if you kept seeing the same final exam questions while you crammed, a great score wouldn't mean much. So a small set of the real final's questions gets sealed in an envelope on day one and never opened until after every practice round is finished.</p>
+    </div>
+
+    <p><strong>Rule one</strong> rotates a fixed group of subjects (by convention, the first eight recruited into any given dataset) through practice "test" and "practice-validation" roles across four different rotations, so every one of those eight gets tested exactly once. Anyone recruited beyond the eighth spot is, under this rule, always used for training — never tested.</p>
+    <p><strong>Rule two</strong> is the sealed envelope: completely separately, the two lowest-numbered subjects <em>outside</em> that first-eight group are permanently set aside before the search even begins, and physically removed from the data every recipe is allowed to train on (removed from the folder on disk, not just filtered by a rule that a bug could accidentally skip). The next two subjects after those become a permanent "practice-validation" group used only for early-stopping decisions during the search — never for scoring a recipe's headline result.</p>
+
+    <figure>
+      <div class="diagram-frame">
+        <svg viewBox="0 0 680 210" role="img" aria-label="Two independent subject-role rules: a rotating fold over subjects 1 to 8, and a separate permanent reservation over subjects 9 and up.">
+          <text x="40" y="20" font-family="JetBrains Mono, monospace" font-size="11" letter-spacing="0.04em" fill="currentColor" opacity="0.7">RULE ONE — one rotation of the 4-fold cycle (subjects 1–8 only)</text>
+          <g font-family="Source Serif 4, serif" font-size="13">
+            <!-- Row 1: 12 boxes -->
+            <g>
+              <rect x="40" y="30" width="40" height="40" rx="3" fill="var(--gold-soft)" stroke="var(--gold)" stroke-width="1.5"/>
+              <text x="60" y="55" text-anchor="middle" fill="currentColor">1</text>
+              <rect x="88" y="30" width="40" height="40" rx="3" fill="var(--gold-soft)" stroke="var(--gold)" stroke-width="1.5"/>
+              <text x="108" y="55" text-anchor="middle" fill="currentColor">2</text>
+              <rect x="136" y="30" width="40" height="40" rx="3" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.5"/>
+              <text x="156" y="55" text-anchor="middle" fill="currentColor">3</text>
+              <rect x="184" y="30" width="40" height="40" rx="3" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.5"/>
+              <text x="204" y="55" text-anchor="middle" fill="currentColor">4</text>
+              <rect x="232" y="30" width="40" height="40" rx="3" fill="none" stroke="currentColor" stroke-width="1" opacity="0.6"/>
+              <text x="252" y="55" text-anchor="middle" fill="currentColor" opacity="0.8">5</text>
+              <rect x="280" y="30" width="40" height="40" rx="3" fill="none" stroke="currentColor" stroke-width="1" opacity="0.6"/>
+              <text x="300" y="55" text-anchor="middle" fill="currentColor" opacity="0.8">6</text>
+              <rect x="328" y="30" width="40" height="40" rx="3" fill="none" stroke="currentColor" stroke-width="1" opacity="0.6"/>
+              <text x="348" y="55" text-anchor="middle" fill="currentColor" opacity="0.8">7</text>
+              <rect x="376" y="30" width="40" height="40" rx="3" fill="none" stroke="currentColor" stroke-width="1" opacity="0.6"/>
+              <text x="396" y="55" text-anchor="middle" fill="currentColor" opacity="0.8">8</text>
+              <rect x="424" y="30" width="40" height="40" rx="3" fill="none" stroke="currentColor" stroke-width="1" opacity="0.35"/>
+              <text x="444" y="55" text-anchor="middle" fill="currentColor" opacity="0.5">9</text>
+              <rect x="472" y="30" width="40" height="40" rx="3" fill="none" stroke="currentColor" stroke-width="1" opacity="0.35"/>
+              <text x="492" y="55" text-anchor="middle" fill="currentColor" opacity="0.5">10</text>
+              <rect x="520" y="30" width="40" height="40" rx="3" fill="none" stroke="currentColor" stroke-width="1" opacity="0.35"/>
+              <text x="540" y="55" text-anchor="middle" fill="currentColor" opacity="0.5">11</text>
+              <rect x="568" y="30" width="40" height="40" rx="3" fill="none" stroke="currentColor" stroke-width="1" opacity="0.35"/>
+              <text x="588" y="55" text-anchor="middle" fill="currentColor" opacity="0.5">12</text>
+            </g>
+            <text x="84" y="88" text-anchor="middle" font-size="11" fill="var(--gold)">test</text>
+            <text x="180" y="88" text-anchor="middle" font-size="11" fill="var(--accent)">val</text>
+            <text x="348" y="88" text-anchor="middle" font-size="11" fill="currentColor" opacity="0.75">train (ids 5–8, this rotation)</text>
+            <text x="540" y="88" text-anchor="middle" font-size="11" fill="currentColor" opacity="0.45">train always (id &gt; 8)</text>
+
+            <text x="40" y="128" font-family="JetBrains Mono, monospace" font-size="11" letter-spacing="0.04em" fill="currentColor" opacity="0.7">RULE TWO — the sealed reservation (fixed forever, made once)</text>
+            <g>
+              <rect x="40" y="138" width="40" height="40" rx="3" fill="none" stroke="currentColor" stroke-width="1" opacity="0.3"/>
+              <rect x="88" y="138" width="40" height="40" rx="3" fill="none" stroke="currentColor" stroke-width="1" opacity="0.3"/>
+              <rect x="136" y="138" width="40" height="40" rx="3" fill="none" stroke="currentColor" stroke-width="1" opacity="0.3"/>
+              <rect x="184" y="138" width="40" height="40" rx="3" fill="none" stroke="currentColor" stroke-width="1" opacity="0.3"/>
+              <rect x="232" y="138" width="40" height="40" rx="3" fill="none" stroke="currentColor" stroke-width="1" opacity="0.3"/>
+              <rect x="280" y="138" width="40" height="40" rx="3" fill="none" stroke="currentColor" stroke-width="1" opacity="0.3"/>
+              <rect x="328" y="138" width="40" height="40" rx="3" fill="none" stroke="currentColor" stroke-width="1" opacity="0.3"/>
+              <rect x="376" y="138" width="40" height="40" rx="3" fill="none" stroke="currentColor" stroke-width="1" opacity="0.3"/>
+              <text x="60" y="163" text-anchor="middle" fill="currentColor" opacity="0.45">1</text>
+              <text x="108" y="163" text-anchor="middle" fill="currentColor" opacity="0.45">2</text>
+              <text x="156" y="163" text-anchor="middle" fill="currentColor" opacity="0.45">3</text>
+              <text x="204" y="163" text-anchor="middle" fill="currentColor" opacity="0.45">4</text>
+              <text x="252" y="163" text-anchor="middle" fill="currentColor" opacity="0.45">5</text>
+              <text x="300" y="163" text-anchor="middle" fill="currentColor" opacity="0.45">6</text>
+              <text x="348" y="163" text-anchor="middle" fill="currentColor" opacity="0.45">7</text>
+              <text x="396" y="163" text-anchor="middle" fill="currentColor" opacity="0.45">8</text>
+
+              <rect x="424" y="138" width="40" height="40" rx="3" fill="var(--crimson-soft)" stroke="var(--crimson)" stroke-width="2"/>
+              <text x="444" y="163" text-anchor="middle" fill="currentColor">9</text>
+              <rect x="472" y="138" width="40" height="40" rx="3" fill="var(--crimson-soft)" stroke="var(--crimson)" stroke-width="2"/>
+              <text x="492" y="163" text-anchor="middle" fill="currentColor">10</text>
+              <rect x="520" y="138" width="40" height="40" rx="3" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.5"/>
+              <text x="540" y="163" text-anchor="middle" fill="currentColor">11</text>
+              <rect x="568" y="138" width="40" height="40" rx="3" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.5"/>
+              <text x="588" y="163" text-anchor="middle" fill="currentColor">12</text>
+            </g>
+            <text x="198" y="196" text-anchor="middle" font-size="11" fill="currentColor" opacity="0.5">not touched by this rule</text>
+            <text x="468" y="196" text-anchor="middle" font-size="11" fill="var(--crimson)">sealed</text>
+            <text x="564" y="196" text-anchor="middle" font-size="11" fill="var(--accent)">search val</text>
+          </g>
+        </svg>
+      </div>
+      <figcaption>An illustrative dataset with 12 subjects. <strong>Top:</strong> one rotation of the practice-exam cycle — only subjects 1–8 ever rotate through "test" or "val" roles; anyone numbered above 8 is always training data under this rule. <strong>Bottom:</strong> a separate, one-time-only reservation — the two lowest-numbered subjects outside the top rule's range (9 and 10) are permanently sealed away, and the next two (11, 12) become the search's own practice-validation set. The two rules never overlap.</figcaption>
+    </figure>
+
+    <p>Once the search finishes and a winning recipe is chosen, its finetuned model is trained <em>one more time</em> — on everyone except the sealed subjects and their small validation pair — and tested, for the first and only time, on the sealed subjects. That score, and only that score, is the one that belongs in a results table. Every other number produced along the way (the search's own practice scores) was influenced, even indirectly, by the decisions that produced it — this one wasn't.</p>
+
+    <div class="sealed-note">
+      <span class="tag">Why go to this much trouble</span>
+      <p>If the sealed subjects' data ever leaked into training or into a scoring decision, a great final number would stop meaning "this generalizes to new people" and start meaning "this memorized the answer key" — the single most common way a machine learning result quietly stops being trustworthy.</p>
+    </div>
+
+    <h2><span class="idx">06</span>Watching it run end to end</h2>
+    <p>Put together, one full search for one new target dataset looks like this:</p>
+
+    <figure>
+      <div class="diagram-frame">
+        <svg viewBox="0 0 960 260" role="img" aria-label="Pipeline: baseline datasets flow through scoring, into a repeating propose-and-test loop, into a winner, into a one-time sealed exam that produces the reported result.">
+          <defs>
+            <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+            </marker>
+            <marker id="arrow-gold" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="var(--gold)"/>
+            </marker>
+          </defs>
+          <g font-family="Source Serif 4, serif" font-size="13">
+            <!-- nodes: centers at x=105,261,417,573,729,885 ; y=150 h=64 w=130 -->
+            <g>
+              <rect x="40" y="118" width="130" height="64" rx="5" fill="var(--paper-alt)" stroke="currentColor" stroke-width="1.3"/>
+              <text x="105" y="145" text-anchor="middle" fill="currentColor">Baseline</text>
+              <text x="105" y="163" text-anchor="middle" fill="currentColor">datasets</text>
+            </g>
+            <g>
+              <rect x="196" y="118" width="130" height="64" rx="5" fill="var(--paper-alt)" stroke="currentColor" stroke-width="1.3"/>
+              <text x="261" y="145" text-anchor="middle" fill="currentColor">Score &amp;</text>
+              <text x="261" y="163" text-anchor="middle" fill="currentColor">rank (§3)</text>
+            </g>
+            <g>
+              <rect x="352" y="118" width="130" height="64" rx="5" fill="var(--paper-alt)" stroke="currentColor" stroke-width="1.3"/>
+              <text x="417" y="145" text-anchor="middle" fill="currentColor">Propose a</text>
+              <text x="417" y="163" text-anchor="middle" fill="currentColor">recipe (S, w)</text>
+            </g>
+            <g>
+              <rect x="508" y="118" width="130" height="64" rx="5" fill="var(--paper-alt)" stroke="currentColor" stroke-width="1.3"/>
+              <text x="573" y="145" text-anchor="middle" fill="currentColor">Cook it, score</text>
+              <text x="573" y="163" text-anchor="middle" fill="currentColor">the reward</text>
+            </g>
+            <g>
+              <rect x="664" y="118" width="130" height="64" rx="5" fill="var(--paper-alt)" stroke="currentColor" stroke-width="1.3"/>
+              <text x="729" y="145" text-anchor="middle" fill="currentColor">Highest-reward</text>
+              <text x="729" y="163" text-anchor="middle" fill="currentColor">recipe wins</text>
+            </g>
+            <g>
+              <rect x="820" y="118" width="130" height="64" rx="5" fill="var(--crimson-soft)" stroke="var(--crimson)" stroke-width="2.2"/>
+              <text x="885" y="145" text-anchor="middle" fill="currentColor">Sealed exam</text>
+              <text x="885" y="163" text-anchor="middle" fill="currentColor">— once, §5</text>
+            </g>
+
+            <line x1="170" y1="150" x2="192" y2="150" stroke="currentColor" stroke-width="1.5" marker-end="url(#arrow)"/>
+            <line x1="326" y1="150" x2="348" y2="150" stroke="currentColor" stroke-width="1.5" marker-end="url(#arrow)"/>
+            <line x1="482" y1="150" x2="504" y2="150" stroke="currentColor" stroke-width="1.5" marker-end="url(#arrow)"/>
+            <line x1="638" y1="150" x2="660" y2="150" stroke="currentColor" stroke-width="1.5" marker-end="url(#arrow)"/>
+            <line x1="794" y1="150" x2="816" y2="150" stroke="currentColor" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+            <path d="M 573 116 C 573 60, 417 60, 417 114" fill="none" stroke="var(--gold)" stroke-width="1.6" marker-end="url(#arrow-gold)"/>
+            <text x="495" y="52" text-anchor="middle" font-size="12" fill="var(--gold)">repeats up to ~40 times</text>
+
+            <text x="885" y="205" text-anchor="middle" font-size="12" fill="var(--crimson)">→ the number in the results table</text>
+          </g>
+        </svg>
+      </div>
+      <figcaption>The middle loop (propose → cook → score) repeats roughly 40 times, alternating between the AI-reasoning phase and the statistical-taster phase, before a single winner is chosen. The last box never participates in that loop — it runs exactly once, on subjects nothing upstream of it was ever allowed to see.</figcaption>
+    </figure>
+
+    <p>Notice what each color has meant throughout this guide: teal marks a <em>measurement</em> (a score computed once, before any real training happens); gold marks a <em>search decision</em> (something the loop chooses or repeats); crimson marks the <em>sealed, once-only</em> honesty check. That three-way split — measure, decide, verify — is really the whole idea of this guide compressed into one visual habit.</p>
+
+    <h2 id="glossary"><span class="idx">07</span>Glossary</h2>
+    <dl class="glossary">
+      <dt>Backbone</dt><dd>The general-purpose, pretrained model that already knows "what movement looks like" before any specialty finetuning happens.</dd>
+      <dt>Embedding</dt><dd>A long list of numbers a model produces to represent one chunk of sensor data — a coordinate in an abstract "meaning space" where similar movements land near each other.</dd>
+      <dt>Finetuning</dt><dd>A short, focused extra training pass on a pretrained model, aimed at one specific task or dataset.</dd>
+      <dt>Macro-F1</dt><dd>An accuracy-style score that averages performance <em>across activity classes equally</em>, so a model can't hide poor performance on a rare activity behind good performance on a common one.</dd>
+      <dt>Z-score</dt><dd>How many standard deviations a value sits from the average of a comparison group — a way to make differently-scaled measurements comparable.</dd>
+      <dt>Dirichlet distribution</dt><dd>A way of randomly generating a set of proportions that are guaranteed to add up to exactly 100%, used here to generate candidate mixture weights.</dd>
+      <dt>Gaussian Process</dt><dd>A statistical model that, given examples seen so far, predicts both a best guess <em>and</em> how confident it is in that guess for anything new.</dd>
+      <dt>Upper Confidence Bound (UCB)</dt><dd>A rule for picking what to try next that rewards both "looks promising" and "we're not sure yet" — balancing safe bets against exploring unknowns.</dd>
+      <dt>Held-out set</dt><dd>Data permanently set aside from all training and search decisions, used only for a final, one-time evaluation.</dd>
+      <dt>Cross-validation fold</dt><dd>One rotation of a repeated train/test split, where the roles of "who's being tested" shift each rotation so everyone eventually gets tested exactly once.</dd>
+    </dl>
+
+    <h2 id="cheatsheet"><span class="idx">08</span>One-page cheat sheet</h2>
+    <div class="table-wrap">
+      <table class="cheat">
+        <thead><tr><th>Question</th><th>Answer</th></tr></thead>
+        <tbody>
+          <tr><td>Why borrow other datasets at all?</td><td>The new target dataset alone usually doesn't have enough people/data to finetune well from scratch.</td></tr>
+          <tr><td>What's actually being searched for?</td><td>A subset of baseline datasets <span class="mono">S</span> and a mixture weight <span class="mono">w</span> for each — a "recipe."</td></tr>
+          <tr><td>How is a recipe scored?</td><td><span class="mono">reward = 0.5·(avg. accuracy) + 0.5·(worst class's accuracy)</span>, from a real training run.</td></tr>
+          <tr><td>How does the search pick what to try next?</td><td>29 rounds of AI reasoning, then a Gaussian Process + "Upper Confidence Bound" rule for the rest.</td></tr>
+          <tr><td>How is the eventual winner chosen?</td><td>Whichever real run — from either phase — scored the single highest reward.</td></tr>
+          <tr><td>How is the final result kept honest?</td><td>Two subjects per dataset are sealed away before the search starts and tested on exactly once, at the very end.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <hr class="sep">
+    <footer>
+      <p>Written as a companion to the project's engineer-facing technical explainer, which cites the exact functions and file locations behind every equation here. This version trades those citations for analogies and worked examples — the underlying math is the same.</p>
+    </footer>
+
+  </div>
+</div>

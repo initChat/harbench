@@ -1,0 +1,446 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>harbench — candidate selection &amp; user-split methodology</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --bg-alt: #f6f7f9;
+    --fg: #1c2128;
+    --fg-muted: #57606a;
+    --border: #d8dee4;
+    --accent: #7c3aed;
+    --accent-soft: #ede9fe;
+    --code-bg: #f0f1f3;
+    --code-fg: #ab296a;
+    --pre-bg: #1c2128;
+    --pre-fg: #e6edf3;
+    --table-head-bg: #eef0f3;
+    --link: #6d28d9;
+    --callout-bg: #f5f0ff;
+    --callout-border: #b794f6;
+    --warn-bg: #fff8ec;
+    --warn-border: #e8b84b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a; --bg-alt: #1b1e24; --fg: #e6e8eb; --fg-muted: #9aa4b2;
+      --border: #2d323b; --accent: #b794f6; --accent-soft: #2a2140;
+      --code-bg: #23262d; --code-fg: #e0a1c4; --pre-bg: #0d0f12; --pre-fg: #dbe2ea;
+      --table-head-bg: #21252c; --link: #c4b5fd; --callout-bg: #211c33;
+      --callout-border: #6d4fb0; --warn-bg: #2a2211; --warn-border: #8a6a1e;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #14161a; --bg-alt: #1b1e24; --fg: #e6e8eb; --fg-muted: #9aa4b2;
+    --border: #2d323b; --accent: #b794f6; --accent-soft: #2a2140;
+    --code-bg: #23262d; --code-fg: #e0a1c4; --pre-bg: #0d0f12; --pre-fg: #dbe2ea;
+    --table-head-bg: #21252c; --link: #c4b5fd; --callout-bg: #211c33;
+    --callout-border: #6d4fb0; --warn-bg: #2a2211; --warn-border: #8a6a1e;
+  }
+  :root[data-theme="light"] {
+    --bg: #ffffff; --bg-alt: #f6f7f9; --fg: #1c2128; --fg-muted: #57606a;
+    --border: #d8dee4; --accent: #7c3aed; --accent-soft: #ede9fe;
+    --code-bg: #f0f1f3; --code-fg: #ab296a; --pre-bg: #1c2128; --pre-fg: #e6edf3;
+    --table-head-bg: #eef0f3; --link: #6d28d9; --callout-bg: #f5f0ff;
+    --callout-border: #b794f6; --warn-bg: #fff8ec; --warn-border: #e8b84b;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    line-height: 1.6;
+    font-size: 16px;
+  }
+
+  .page {
+    max-width: 920px;
+    margin: 0 auto;
+    padding: 2.5rem 1.5rem 5rem;
+  }
+
+  h1 { font-size: 1.8rem; margin: 0 0 0.35rem; letter-spacing: -0.01em; }
+  .subtitle { color: var(--fg-muted); font-size: 0.98rem; margin: 0 0 1.3rem; }
+  .scope { font-size: 0.94rem; margin: 0 0 2rem; }
+
+  h2 {
+    font-size: 1.24rem;
+    margin: 2.6rem 0 0.9rem;
+    padding-bottom: 0.4rem;
+    border-bottom: 1px solid var(--border);
+    scroll-margin-top: 1.2rem;
+  }
+  h2 .num { color: var(--accent); font-variant-numeric: tabular-nums; margin-right: 0.5rem; }
+  h3 { font-size: 1.02rem; margin: 1.8rem 0 0.7rem; color: var(--fg); }
+  h3 .stage { color: var(--accent); }
+
+  p { margin: 0 0 1rem; }
+  strong { color: var(--fg); }
+  em { color: var(--fg-muted); font-style: italic; }
+  ul, ol { margin: 0 0 1.2rem; padding-left: 1.3rem; }
+  li { margin-bottom: 0.4rem; }
+  li:last-child { margin-bottom: 0; }
+  li > ul, li > ol { margin-top: 0.4rem; margin-bottom: 0.4rem; }
+
+  code {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    background: var(--code-bg);
+    color: var(--code-fg);
+    padding: 0.12em 0.38em;
+    border-radius: 4px;
+    font-size: 0.88em;
+    word-break: break-word;
+  }
+
+  pre {
+    background: var(--pre-bg);
+    color: var(--pre-fg);
+    padding: 1rem 1.1rem;
+    border-radius: 8px;
+    overflow-x: auto;
+    font-size: 0.85rem;
+    margin: 0 0 1.2rem;
+    border: 1px solid var(--border);
+  }
+  pre code { background: none; color: inherit; padding: 0; border-radius: 0; font-size: 1em; }
+  pre.eq { font-size: 0.92rem; }
+
+  .table-wrap {
+    overflow-x: auto;
+    margin: 0 0 1.3rem;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+  table { border-collapse: collapse; width: 100%; font-size: 0.92rem; }
+  th, td { text-align: left; padding: 0.55rem 0.8rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+  thead th { background: var(--table-head-bg); font-weight: 600; white-space: nowrap; }
+  tr:last-child td { border-bottom: none; }
+  td code, th code { white-space: nowrap; }
+
+  .step {
+    margin: 0 0 1.3rem;
+    padding: 0.9rem 1.1rem 0.2rem;
+    background: var(--bg-alt);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: 8px;
+  }
+  .step-title { font-weight: 600; margin: 0 0 0.5rem; color: var(--accent); }
+
+  .callout {
+    background: var(--callout-bg);
+    border: 1px solid var(--callout-border);
+    border-radius: 8px;
+    padding: 0.9rem 1.1rem;
+    margin: 0 0 1.3rem;
+    font-size: 0.94rem;
+  }
+  .callout p:last-child, .callout ul:last-child { margin-bottom: 0; }
+
+  .aside {
+    background: var(--warn-bg);
+    border: 1px solid var(--warn-border);
+    border-radius: 8px;
+    padding: 0.9rem 1.1rem;
+    margin: 0 0 1.3rem;
+    font-size: 0.92rem;
+  }
+  .aside p:last-child { margin-bottom: 0; }
+
+  .pill {
+    display: inline-block;
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    padding: 0.15em 0.55em;
+    border-radius: 999px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    margin-left: 0.4rem;
+    vertical-align: middle;
+  }
+
+  .diagram {
+    background: var(--pre-bg);
+    color: var(--pre-fg);
+    border-radius: 8px;
+    padding: 1rem 1.1rem;
+    overflow-x: auto;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.82rem;
+    white-space: pre;
+    border: 1px solid var(--border);
+    margin: 0 0 1.3rem;
+  }
+
+  nav.toc {
+    background: var(--bg-alt);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.3rem;
+    margin: 0 0 2rem;
+    font-size: 0.92rem;
+  }
+  nav.toc div.toc-title {
+    font-weight: 600; margin-bottom: 0.5rem; color: var(--fg-muted);
+    text-transform: uppercase; font-size: 0.75rem; letter-spacing: 0.06em;
+  }
+  nav.toc ol { margin: 0; padding-left: 1.2rem; columns: 2; column-gap: 2rem; }
+  nav.toc li { margin-bottom: 0.3rem; break-inside: avoid; }
+  a { color: var(--link); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  hr.sep { border: none; border-top: 1px solid var(--border); margin: 2.6rem 0; }
+  blockquote {
+    margin: 0 0 1.3rem;
+    padding: 0.9rem 1.1rem;
+    background: var(--bg-alt);
+    border-left: 3px solid var(--accent);
+    border-radius: 0 8px 8px 0;
+    font-size: 0.95rem;
+  }
+  blockquote p:last-child { margin-bottom: 0; }
+
+  @media (max-width: 620px) {
+    nav.toc ol { columns: 1; }
+    .page { padding: 1.5rem 1rem 4rem; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <h1>harbench — Multi-Candidate Selection &amp; User Splitting</h1>
+  <p class="subtitle">Methodology-grade walkthrough: the equations behind "is this candidate selected", and how train/val/held-out users are chosen</p>
+  <p class="scope">Scope of this deck: not a full repo tour (see <code>slide/finetune_overview.md</code> for that) — this is the <strong>selection cascade</strong> that decides which baseline-dataset subset+weight gets finetuned into a target-dataset model, and the <strong>user-role assignment</strong> (train / val / held-out) that makes every reported number honest. Written to be liftable, almost verbatim, into a PerCom-style methodology section.</p>
+
+  <nav class="toc">
+    <div class="toc-title">Contents</div>
+    <ol>
+      <li><a href="#goal">Goal, and where this sits in the pipeline</a></li>
+      <li><a href="#cascade">The selection cascade — every equation</a></li>
+      <li><a href="#candgen">Candidate generation — how (S, w) is produced</a></li>
+      <li><a href="#reward">The reward — the scalar every trial is judged by</a></li>
+      <li><a href="#acquisition">Selection I — which candidate runs next</a></li>
+      <li><a href="#winner">Selection II — which trial is the winner</a></li>
+      <li><a href="#users">User-role assignment — equations and rules</a></li>
+      <li><a href="#control-flow">Control flow — run_finetune_multi_candidate</a></li>
+      <li><a href="#io">Input / output contracts</a></li>
+      <li><a href="#assumptions">Assumptions baked into the code</a></li>
+      <li><a href="#testing">How to verify this deck's claims</a></li>
+      <li><a href="#maintain">How to maintain this</a></li>
+    </ol>
+  </nav>
+
+  <h2 id="goal"><span class="num">01</span>Goal, and where this sits in the pipeline</h2>
+  <p><strong>Question this material answers</strong>: given an unseen target HAR dataset, which subset <code>S</code> of baseline datasets and per-baseline mixture weight <code>w</code> should a pretrained SSL backbone be finetuned on, and how is "the winner" mathematically determined — while guaranteeing the reported number was never seen by any search decision?</p>
+
+  <div class="diagram">lightweight-score-unify   heavyweight-similar-score
+  (signal-quality gate)     (target-similarity rank)
+        │                          │
+        └───────────┬──────────────┘
+                     ▼
+     optimal_subset_selection  (sibling repo, orchestrator)
+   semantic_scorer → features → candidate_pool/llm_proposer
+        → surrogate (GP+UCB) → reward_combined → winner
+                     │  shells out per candidate, real trial
+                     ▼
+        harbench/finetune.py  (THIS REPO)
+   --loss_mode ce_scl pooled trial   (search-time, many times)
+   run_finetune_multi_candidate      (confirmatory, once)
+                     │
+                     ▼
+        held-out honesty check (never searched over)</div>
+
+  <p><code>harbench</code> is the <strong>execution engine</strong>: it never decides which candidate to try next or which one wins — that logic lives in the sibling repo <code>optimal_subset_selection</code>. <code>harbench</code> is trusted to (a) train a specific manifest correctly and (b) enforce the train/val/test <strong>user</strong> partitions that make every number it returns honest. This deck documents both halves — the upstream decision math (cross-repo, read from source, not imported) and <code>harbench</code>'s own splitting code — because a methodology section needs both to describe the experiment precisely.</p>
+
+  <h2 id="cascade"><span class="num">02</span>The selection cascade — every equation, in pipeline order</h2>
+  <p>Six independent scores/decisions compose into "is (S, w) selected as the next trial" and "is trial t selected as the winner." Each stage names its owning repo — only the last two run inside <code>harbench</code> itself.</p>
+
+  <h3><span class="stage">Stage A</span> — Signal-quality gate <span class="pill">cross-repo</span></h3>
+  <p>Repo: <code>lightweight-score-unify</code>. Per <code>(user, sensor-location)</code> row <code>r</code>, for each metric <code>m</code> with fixed absolute anchors <code>(bad_m, good_m)</code> (no peer comparison):</p>
+  <pre class="eq"><code>score_m(r)                 = clip( (value_m(r) - bad_m) / (good_m - bad_m), 0, 1 )
+unify_lightweight_score(r) = mean_m score_m(r)               # lightweight_check.py:204-209
+
+unified_lightweight_score(D) = mean_r unify_lightweight_score(r)   # lightweight_check.py:224-232</code></pre>
+  <p><strong>Gate</strong> (population <code>P</code> = every previously-scored dataset's score, <code>μ = mean(P)</code>, <code>σ = std(P)</code>):</p>
+  <pre class="eq"><code>D passes  ⟺  unified_lightweight_score(D) ≥ μ − 3σ            # lightweight_check.py:411-431</code></pre>
+  <div class="callout"><p><span class="pill">cross-repo</span> A one-tailed 3σ historical-outlier rule, not a fixed absolute cutoff. <code>harbench</code>'s side only <em>reads</em> this gate's pass/fail JSON as data (<code>optimal_subset_selection/lightweight_pool.py:37-46</code>) — never recomputes or imports the scoring code.</p></div>
+
+  <h3><span class="stage">Stage B</span> — Target-similarity re-scoring <span class="pill">cross-repo</span></h3>
+  <p>Repo: <code>heavyweight-similar-score</code>. For each baseline <code>i</code> that passed Stage A, against fixed target <code>T</code>, pairwise <code>silhouette(T,i)</code>/<code>mmd(T,i)</code> on L2-normalized 512-d embeddings, leave-one-out z-scored against the <em>other</em> passed baselines:</p>
+  <pre class="eq"><code>z_i  = ( x_i − mean_{j≠i}(x_j) ) / std_{j≠i}(x_j)
+low_clip:  s_i = ( clip(−z_i, −σ, σ) + σ ) / (2σ)              # scoring.py:4-6,31-46,93-98
+
+heavyweight_score(T, i) = mean( s_silhouette(i), s_mmd(i) )    # scoring.py:101-119</code></pre>
+  <p>"<code>only_sh_mmd</code> branch": two other metrics this module defines (<code>effective_rank</code>, <code>temporal_coherence</code>) are deliberately unhooked from the score. <code>harbench</code>'s neighbor consumes this as a pre-rendered markdown rank table, never re-derives it.</p>
+
+  <h3><span class="stage">Stage C</span> — Semantic compatibility <span class="pill">cross-repo</span></h3>
+  <p>Repo: <code>optimal_subset_selection</code>, LLM-scored. <code>activity_semantic_score(i)</code>, <code>placement_semantic_score(i,p) ∈ [0,1]</code> — not closed-form: one forced-tool-use Claude call per target run (<code>semantic_scorer.py:180-279</code>), clipped via <code>_clip01</code> (line 176-177). Its inputs are exact, not semantic: <code>shared_activities</code>/<code>target_activities_uncovered</code> are plain set intersection/difference over taxonomy-canonicalized labels (<code>_shared_and_uncovered</code>, lines 111-117) — the LLM judges only the compatibility those sets can't answer alone.</p>
+
+  <h3><span class="stage">Stage D</span> — Empirical baseline score</h3>
+  <pre class="eq"><code>empirical_baseline_score(i) = (1 / |{t : i ∈ S_t}|) · Σ_{t : i ∈ S_t} macro_f1(t)   # features.py:60-76</code></pre>
+  <p>Over every real trial <code>t</code> run so far in <em>either</em> phase. Falls back to the neutral constant <code>0.5</code> if <code>i</code> has never appeared in a trial (<code>features.py:38,90-91,117-119</code>) — the one feature that can only reflect behavior <em>after</em> real trials exist.</p>
+
+  <h3><span class="stage">Stage E</span> — Portfolio feature vector (the GP's input)</h3>
+  <pre class="eq"><code>weighted_mean(v; S, w) = Σ_k w_k · v.get(i_k, 0.5)  /  Σ_k w_k             # features.py:41-43
+
+features(S, w) = [ weighted_mean(heavyweight_score),
+                    weighted_mean(activity_semantic_score),
+                    weighted_mean(placement_semantic_score),
+                    weighted_mean(empirical_baseline_score) ]  ∈ ℝ⁴        # features.py:31-36,79-126</code></pre>
+  <p>Deliberately just these four means — no cost term, no portfolio-shape statistics (task-doc decision, <code>features.py:26-28</code>).</p>
+
+  <h2 id="candgen"><span class="num">03</span>Candidate generation — how (S, w) is produced</h2>
+  <p>Two disjoint mechanisms, split by <code>config.ITER_LLM_END = 30</code> (1-indexed):</p>
+  <div class="step"><p class="step-title">Iterations 1–29 — LLM phase</p><p>One candidate per iteration, from a forced-tool-use LLM call conditioned on every baseline's frozen Stage A/B/C facts plus the running trial log (<code>llm_proposer.py</code>, dispatched at <code>loop.py:136-145</code>). Not a closed-form rule.</p></div>
+  <div class="step"><p class="step-title">Iterations 30+ — BO phase, uncapped for the rest of the run</p>
+  <pre class="eq"><code>Ω = ⋃_{s=1}^{k}  C(B, s)     (B = eligible baseline pool, |B|=n, k=max_subset_size, default 4)
+                                                              # candidate_pool.py:60-68</code></pre>
+  <p>Guarded before enumeration by <code>math.comb</code> (<code>MAX_POOL_PORTFOLIOS = 1e8</code>, lines 135-176) — a real 2026-08-25 incident: an uncapped 44-baseline pool is <code>2^44 ≈ 1.8×10^13</code> subsets and OOM-killed the host.</p>
+  <pre class="eq"><code>w ~ Dirichlet(1,…,1)     (uniform over the (n−1)-simplex), up to n_weight_draws=3
+kept only if L∞(w, every prior kept draw) > MIN_WEIGHT_DIFF = 0.03          # candidate_pool.py:83-103</code></pre>
+  <p><code>|S|=1</code> always yields <code>w=[1.0]</code>. Seed is deterministic per-subset (<code>md5(f"{seed}:{subset}")</code>, lines 75-80) — reproducible given the same eligible-baseline list.</p></div>
+
+  <h2 id="reward"><span class="num">04</span>The reward — the scalar every trial is judged by</h2>
+  <pre class="eq"><code>reward(mean_f1, std_f1; κ=0.5)               = mean_f1 − κ·std_f1                # surrogate.py:29-34
+reward_per_class(pcf1; κ=0.5, worst_class)   = min_c(pcf1[c]) − κ·std(pcf1_std)   # surrogate.py:37-57
+reward_combined(macro_f1, per_class_f1; α=0.5, κ=0.5)
+    = α·macro_f1 + (1−α)·min_c(per_class_f1[c]) − κ·std_f1                        # surrogate.py:60-74</code></pre>
+  <div class="callout"><p><code>min</code> over classes, not <code>mean</code>: <code>mean(per_class_f1)</code> is <em>by definition</em> the same number as macro-F1, so blending macro-F1 with the mean of per-class F1 would be degenerate. <code>min</code> is the one per-class quantity that actually diverges. <code>α = config.REWARD_MACRO_WEIGHT = 0.5</code> is an untuned equal-weight default. This is the one scalar logged for every iteration in both phases (<code>loop.py:204-218</code>).</p></div>
+  <p><code>macro_f1</code> and every <code>per_class_f1[c]</code> come from <code>harbench</code>'s own <code>evaluate()</code>, restricted to the target dataset's own label ids (<code>finetune.py:339-357,403-417</code>; ids resolved by <code>_resolve_target_label_ids</code>, lines 954-964) — a fix over an earlier bug where scoring against the full pooled taxonomy diluted <code>macro_f1</code> by how many baselines got pooled, not by target performance (commits <code>19b05f0</code>, <code>444c92f</code>).</p>
+
+  <h2 id="acquisition"><span class="num">05</span>Selection I — which candidate runs next (acquisition)</h2>
+  <p>BO-phase only. Fit a GP on every previously-tried candidate's <code>(features, reward_combined)</code>:</p>
+  <pre class="eq"><code>g ~ GaussianProcessRegressor( kernel = RBF(ℓ=1, fixed) + WhiteKernel(1e-3),
+                               normalize_y=True, n_restarts_optimizer=0 )         # surrogate.py:83-95</code></pre>
+  <div class="aside"><p>Deliberately <strong>untuned</strong> — "a proof the mechanism works... not a statistically tuned model at the trial counts this repo runs" (<code>surrogate.py:1-8</code>).</p></div>
+  <pre class="eq"><code>(μ_c, σ_c) = g.predict(x_c, return_std=True)
+UCB(c) = μ_c + κ_UCB · σ_c ,    κ_UCB = KAPPA_UCB = 1.0
+chosen = argmax_c  UCB(c)                                                         # surrogate.py:26,98-124</code></pre>
+  <p>Cold start (empty history) instead ranks by <code>mean_heavyweight_score</code> alone (<code>bootstrap_rank</code>, lines 77-80) — in practice the LLM phase always populates history first. <code>mean_empirical_baseline_score</code> (Stage D) is recomputed every BO iteration, not cached at pool-build time — a baseline shown toxic at iteration 33 discourages re-picking it at iteration 40 (<code>loop.py:152-158</code>).</p>
+
+  <h2 id="winner"><span class="num">06</span>Selection II — which trial is the winner</h2>
+  <pre class="eq"><code>winner = argmax_{t ∈ trial_log}  reward_combined(t)          # loop.py:224-229</code></pre>
+  <p>Across <strong>both phases pooled together</strong> — an early LLM-phase trial can beat every later BO-phase trial. Dict key kept as <code>"best_by_macro_f1"</code> for an external JSON contract even though the ranking criterion is the full blended reward — read that key name as legacy, not literal.</p>
+  <div class="aside"><p>This is still a <strong>search-time</strong> number, computed on the search-view (held-out subjects physically absent from disk) — explicitly <em>not</em> reportable (<code>finetune.py:1319-1321</code>: <code>pooled_search_time_macro_f1</code> is "kept for reference only"). Section 7c covers the confirmatory step that produces the number that <em>is</em> reportable.</p></div>
+
+  <h2 id="users"><span class="num">07</span>User-role assignment — the equations and rules</h2>
+  <p>Every reported F1/accuracy number is only as trustworthy as the user split that produced it. Three independent, fully deterministic rules apply, selected by run mode — <strong>no rule ever draws a random train/test split per run</strong>; every split is a fixed lookup table or a seeded reproducible draw.</p>
+
+  <h3>7a. Single-dataset 4-fold CV (<code>run_finetune</code>, default mode)</h3>
+  <pre><code>FOLDS = [
+    {"test": [1, 2], "val": [3, 4]},
+    {"test": [3, 4], "val": [5, 6]},
+    {"test": [5, 6], "val": [7, 8]},
+    {"test": [7, 8], "val": [1, 2]},
+]                                                              # finetune.py:159-164</code></pre>
+  <p><code>SEED = 42</code> (line 157) seeds everything <em>else</em> — model init, sampler shuffling — not this table, which is fixed. <code>train = ~(test_mask ∪ val_mask)</code>, computed once in the shared loader (<code>src/data/dataloader.py:441-443</code>), not enumerated separately.</p>
+  <div class="aside"><p><span class="pill">verified live</span> Every subject id <code>1..8</code> serves as <code>test</code> in exactly one fold and <code>val</code> in exactly one fold. <strong>Any subject id beyond 8 is in <code>train</code> in every single fold — never tested, in any fold.</strong> <code>held_out.py</code>'s own docstring confirms this cross-repo: "harbench's FOLDS only ever rotates subjects 1-8 through test/val roles; every dataset's subjects beyond #8 are already used for TRAINING in every fold" (<code>held_out.py:5-7</code>).</p></div>
+
+  <h3>7b. Pooled multi-baseline training (<code>run_finetune_pooled</code>, and the pooled half of <code>run_finetune_multi_candidate</code>)</h3>
+  <p><code>_pooled_train_val_test_masks</code> (<code>finetune.py:911-951</code>, shared by both call sites — one implementation). Per pooled dataset <code>d</code> with raw ids sorted ascending <code>r_1 &lt; r_2 &lt; … &lt; r_m</code>:</p>
+  <pre class="eq"><code>if m ≥ 4:   test(d) = {r_1, r_2}      val(d) = {r_3, r_4}      train(d) = {r_5,…,r_m}
+if m &lt; 4:   per-user split impossible → random per-window fallback (below)</code></pre>
+  <p><strong>Position-based, not literal-id-based</strong> — the deliberate fix over a bug where <code>FOLDS[0]</code>'s literal ids <code>[1,2]</code>/<code>[3,4]</code> silently produced an <em>empty</em> split for any dataset not numbered <code>1..8</code> (e.g. <code>har70plus</code> uses raw ids <code>501..518</code>); see commit <code>d5e8b2f</code> and <code>finetune.py:1013-1025</code>.</p>
+  <pre class="eq"><code>perm = RandomState(SEED=42).permutation(all_window_indices_of_d)
+n_test = max(1, round(N · 0.2))     n_val = max(1, round(N · 0.2))
+test(d) = perm[:n_test]   val(d) = perm[n_test : n_test+n_val]   train(d) = rest
+                                    # WINDOW_SPLIT_{TEST,VAL}_FRAC=0.2, finetune.py:169-170,935-944</code></pre>
+  <div class="aside"><p>Window-level fallback applies only to a pooled dataset with <code>&lt;4</code> distinct users, and is <strong>not subject-independent</strong> for that dataset (windows from the same subject can land in both train and test) — an explicit, named limitation (<code>finetune.py:1022-1025</code>). It applies per affected dataset only; every other pooled dataset in the same manifest still gets 7b's subject-independent split.</p></div>
+
+  <h3>7c. Permanent held-out subjects <span class="pill">cross-repo</span></h3>
+  <p>Repo: <code>optimal_subset_selection</code>, consumed by <code>harbench</code> via <code>--custom_test_users</code>/<code>--custom_val_users</code>.</p>
+  <pre class="eq"><code>FOLDS_SUBJECT_IDS = {1,…,8}                                   # held_out.py:33, mirrors 7a's domain
+
+held_out(T) = the 2 lowest-id subjects of T with raw id ∉ FOLDS_SUBJECT_IDS
+val(T)      = the next 2 lowest-id subjects of T with raw id ∉ FOLDS_SUBJECT_IDS ∪ held_out(T)
+                                                    # pick_held_out_subjects/pick_val_subjects, held_out.py:36-60</code></pre>
+  <p>Deterministic — "the lowest-id ones among the spare pool, for reproducibility," not random.</p>
+  <pre class="eq"><code>search_view(T) = symlink view of T's on-disk USER folders with held_out(T) excluded   # held_out.py:63-68</code></pre>
+  <div class="callout"><p><span class="pill">cross-repo</span> Every search-time trial (every LLM- or BO-phase candidate) is pointed at <code>search_view(T)</code> via <code>manifest_builder.build_manifest</code>'s <code>target_entry</code> — <code>held_out(T)</code> is <strong>structurally</strong> absent from training data for the entire search, not merely excluded by an id filter a bug could bypass.</p></div>
+  <p><strong>Final honesty check</strong> — run exactly once, after the search picks a winner, on the <strong>full, unfiltered</strong> data root:</p>
+  <pre><code>harbench finetune.py --single_split \
+    --dataset T --data_root &lt;FULL root, not search_view&gt; \
+    --weights &lt;winner's finetuned backbone&gt; \
+    --custom_test_users {held_out(T)} --custom_val_users {val(T)}
+                       # held_out.py:86-124; finetune.py:1216-1217,1226-1241 (multi-candidate variant)</code></pre>
+  <div class="callout"><p><strong>This is the only evaluation in the whole pipeline that never influenced a single search decision</strong> — it is the number that belongs in a paper's results table, not <code>pooled_search_time_macro_f1</code> (§6) and not the LLM/BO reward.</p></div>
+  <p><code>--custom_test_users</code>/<code>--custom_val_users</code> (<code>finetune.py:1828-1834</code>) override <code>FOLDS[0]</code>'s ids for single-split mode — validated to require <code>--single_split</code> (or <code>--candidates_manifest_json</code>) and to always be given as a pair (<code>finetune.py:1862-1881</code>).</p>
+
+  <h3>7d. Mixture-weight realization changes who is physically present in <code>train</code></h3>
+  <p>Repo: <code>optimal_subset_selection</code>. <code>weighted_pool.build_weighted_view</code> realizes a non-uniform <code>w_i</code> by <strong>dropping whole user folders</strong> (never partial-user rows), since <code>harbench</code>'s pooled loader has no weighting concept of its own:</p>
+  <pre class="eq"><code>scale_factor = min_i( natural_i / w_i )          # largest pool achievable by pure down-sampling
+target_i     = scale_factor · w_i                                    # weighted_pool.py:60-66</code></pre>
+  <p>A greedy, folder-name-sorted selection keeps users until the running total is closest to <code>target_i</code>, <strong>never below <code>MIN_USERS = 4</code></strong> kept users (lines 69-92,33) — that floor exists so 7b's <code>≥4-users</code> branch still applies after down-sampling. A small <code>w_i</code> shrinks baseline <code>i</code>'s <strong>train</strong> contribution only — its test/val users are still chosen by 7b's position-based rule on whichever users remain in the view.</p>
+
+  <h2 id="control-flow"><span class="num">08</span>Control flow — <code>run_finetune_multi_candidate</code> (<code>finetune.py:1144-1340</code>)</h2>
+  <p>The one <code>harbench</code>-native function tying §4–7 together for a single target, replacing <code>optimal_subset_selection/candidate_ablation.py</code>'s older <code>2·(N+1)</code>-subprocess orchestration with one process:</p>
+
+  <div class="step"><p class="step-title">1. Load target data once</p><p><code>finetune.py:1212-1217</code> — <code>load_dataset</code> reads the target's <strong>full, non-search-view</strong> root (held-out subjects must be physically present so <code>--custom_test_users</code> can exclude <em>and</em> later test on them). Reused for every held-out-eval call below.</p></div>
+  <div class="step"><p class="step-title">2. <code>prior_backbone</code> baseline</p><p><code>finetune.py:1219-1241,1302-1306</code> — <code>_held_out_eval</code> on the un-finetuned pretrained backbone: plain CE single-split fine-tune on <code>train = all \ (held_out ∪ val)</code>, test only on <code>held_out</code>. The pre-search reference point.</p></div>
+  <div class="step"><p class="step-title">3. Per candidate <code>cid</code> in the manifest list</p><p><code>finetune.py:1243-1300,1308-1325</code> — <code>_train_pooled_candidate</code> rebuilds the same CE+SCL pooled trial §4–6 already ran during search (<code>set_seed</code> re-called before every stage — one process now runs what used to be separate subprocesses, so RNG state must be reset explicitly), using the 7b split, logging <code>pooled_search_time_macro_f1</code> for reference only; then <code>_held_out_eval</code> on the resulting finetuned backbone — the 7c honesty check, on the SAME held-out subjects as step 2.</p></div>
+  <div class="step"><p class="step-title">4. Write <code>results.json</code></p><p><code>finetune.py:1327-1340</code> — one row per candidate: <code>{candidate_id, baselines: dict(zip(S, w)), test_f1, test_acc, pooled_search_time_macro_f1, ...}</code>. This is exactly the file shape a <code>finetune_multi_candidate/.../results.json</code> run produces.</p></div>
+
+  <div class="aside"><p><strong>Determinism note</strong> (<code>finetune.py:1169-1176</code>): every stage explicitly calls <code>set_seed(args.seed)</code> and does <code>del model</code> + <code>torch.cuda.empty_cache()</code> — a fresh subprocess used to get a fresh seed/fresh GPU memory for free; running <code>2·(N+1)</code> models sequentially in one process makes both an explicit responsibility instead.</p></div>
+
+  <h2 id="io"><span class="num">09</span>Input / output contracts</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Artifact</th><th>Produced by</th><th>Consumed by</th></tr></thead>
+    <tbody>
+      <tr><td><code>passed_lightweight_dataset.json</code></td><td><code>lightweight-score-unify</code></td><td><code>optimal_subset_selection/lightweight_pool.py</code> (eligible pool)</td></tr>
+      <tr><td><code>&lt;target&gt;_heavyweight_rank.md</code></td><td><code>heavyweight-similar-score</code></td><td><code>optimal_subset_selection/heavyweight_scores.py</code></td></tr>
+      <tr><td>dataset cards</td><td>authored/bootstrapped in <code>optimal_subset_selection</code></td><td><code>semantic_scorer.py</code></td></tr>
+      <tr><td><code>--candidates_manifest_json</code></td><td><code>optimal_subset_selection</code> (post-search selection of winner+companions)</td><td><code>finetune.py::run_finetune_multi_candidate</code></td></tr>
+      <tr><td><code>--baseline_manifest</code></td><td><code>manifest_builder.build_manifest</code></td><td><code>finetune.py::run_finetune_pooled</code></td></tr>
+      <tr><td><code>log/loop_state/&lt;target&gt;__&lt;time&gt;.json</code></td><td><code>loop.run_loop</code> (every iteration)</td><td>not read by <code>harbench</code>; audit trail only</td></tr>
+      <tr><td><code>results.json</code> (multi_candidate mode)</td><td><code>finetune.py::run_finetune_multi_candidate</code></td><td>a human / the paper's results table; not re-consumed</td></tr>
+    </tbody>
+  </table></div>
+
+  <h2 id="assumptions"><span class="num">10</span>Assumptions baked into the code (and where they'd break)</h2>
+  <ul>
+    <li><strong>7a's <code>FOLDS</code> assumes raw subject ids <code>1..8</code> exist</strong> and mean "the canonical rotation set." Any dataset numbered differently either silently ignores subjects <code>&gt;8</code> for testing forever (7a) or would have produced an <em>empty</em> split before the 7b fix — now guarded (<code>d5e8b2f</code>, and <code>create_dataloaders</code>'s loud <code>ValueError</code> at <code>src/data/dataloader.py:455-466</code>).</li>
+    <li><strong>7c's held-out/val picks assume ≥4 spare subjects</strong> outside <code>FOLDS_SUBJECT_IDS</code> per target. <code>held_out.py:41-46,55-60</code> raises <code>ValueError</code> rather than degrading — no window-level fallback the way 7b has one.</li>
+    <li><strong><code>reward_combined</code>'s <code>α=0.5</code>/<code>κ=0.5</code> are untuned defaults</strong>, not fit to any validation criterion (<code>config.py:70-72</code>) — cite these as fixed hyperparameters of the search, not learned values.</li>
+    <li><strong>The GP kernel is deliberately fixed/untuned</strong> (<code>length_scale_bounds="fixed"</code>, <code>n_restarts_optimizer=0</code>) — "a proof the mechanism works... not a statistically meaningful surrogate at the trial counts this repo runs" (<code>surrogate.py:1-8</code>).</li>
+    <li><strong><code>weighted_pool</code>'s down-sampling never drops below 4 survivors</strong>, so an achieved mixture weight can be off from the requested one for a small baseline — <code>manifest_builder</code> reports both <code>requested</code> and <code>achieved</code> weight rather than assuming they match.</li>
+    <li><strong><code>pooled_search_time_macro_f1</code> is not an honesty check</strong> — held-out excluded, but not independent of the acquisition process that chose the candidate. Explicitly flagged non-reportable (<code>finetune.py:1319-1321</code>); only §7c's number is valid.</li>
+  </ul>
+
+  <h2 id="testing"><span class="num">11</span>How to verify this deck's claims yourself</h2>
+  <p>No pytest-based test in <code>harbench</code> exercises the cross-repo selection math directly — that lives in <code>optimal_subset_selection/tests/</code> (<code>python tests/run_all.py</code>, mocking the real LLM/subprocess calls). To sanity-check <code>harbench</code>'s own splitting code in isolation:</p>
+  <pre><code>python -c "
+from src.data.dataloader import load_dataset, create_dataloaders
+X, Y, U = load_dataset('dsads', ['ACC'])
+tl, vl, tel = create_dataloaders(X, Y, U, [1,2], [3,4])
+print(len(tl.dataset), len(vl.dataset), len(tel.dataset))"</code></pre>
+  <p>Confirm the three counts partition <code>len(U)</code> with no overlap (<code>train_mask = ~(test_mask | val_mask)</code> guarantees this algebraically; a live run also catches a silently-empty split via the <code>ValueError</code>s at <code>src/data/dataloader.py:455-466</code>). For the full multi-candidate flow, run <code>run_finetune_multi_candidate</code> with a tiny one-candidate manifest and <code>--epochs 1</code>, and confirm <code>results.json</code> has exactly <code>1 + len(candidates)</code> rows with distinct <code>weights_path</code>s.</p>
+
+  <h2 id="maintain"><span class="num">12</span>How to maintain this</h2>
+  <ul>
+    <li><strong>Change the reward function</strong>: edit <code>surrogate.py</code>'s <code>reward_combined</code> only — <code>loop.py</code>/<code>finetune.py</code> never hardcode the formula. Update <code>config.REWARD_MACRO_WEIGHT</code> for the blend weight, not a literal in <code>surrogate.py</code>.</li>
+    <li><strong>Change held-out/val reservation counts</strong>: <code>held_out.py</code>'s <code>reserve_target(n_held_out=2, n_val=2)</code> — but <code>harbench</code>'s 7a/7b rules independently assume 2 test + 2 val per fold/dataset; changing one without the other desyncs which subjects are "spare."</li>
+    <li><strong>Change the BO candidate pool's size</strong>: <code>candidate_pool.py</code>'s <code>max_subset_size</code>/<code>n_weight_draws</code> — always re-check <code>_estimate_portfolio_count</code> against <code>MAX_POOL_PORTFOLIOS</code> first. <code>harbench</code> has no cap of its own — it trusts whatever manifest it's handed.</li>
+    <li><strong>Change held-out/val selection strategy</strong> (e.g. stratify instead of lowest-id): only <code>held_out.py</code>'s pick functions need to change; <code>harbench</code>'s <code>--custom_test_users</code>/<code>--custom_val_users</code> contract is agnostic to how ids were chosen.</li>
+    <li><strong>Change the pooled test/val split (7b)</strong>: touch <code>_pooled_train_val_test_masks</code> only — shared by <code>run_finetune_pooled</code> and <code>run_finetune_multi_candidate</code> specifically so this rule has exactly one implementation; do not fork it per call site.</li>
+  </ul>
+
+  <hr class="sep">
+  <h2 style="border-bottom:none;margin-bottom:0.6rem;">Appendix — methodology-section-ready summary</h2>
+  <blockquote><p>For each target dataset, baseline datasets are first screened for signal quality (a per-dataset score in <code>[0,1]</code>, gated at <code>mean − 3σ</code> over the historical score population) and then re-ranked against the target by a leave-one-out z-scored blend of embedding silhouette and MMD. A search procedure — 29 LLM-proposed iterations followed by Gaussian-process/UCB optimization over a mechanically enumerated subset-and-Dirichlet-weight pool (subset size ≤ 4, ≤ 3 weight draws per subset) — evaluates each candidate <code>(S, w)</code> with a real cross-entropy + supervised-contrastive finetuning trial, scored only on the target dataset's own classes. Every trial is reduced to <code>reward = 0.5·macro-F1 + 0.5·worst-class-F1</code>, and the maximum-reward trial across both search phases is selected as the winning recipe. Two subjects per target dataset (the lowest-numbered subjects outside the standard 4-fold rotation's <code>{1,…,8}</code>) are permanently reserved and physically excluded from every search-time dataset view; after the search concludes, the winning recipe's finetuned backbone is re-evaluated exactly once against these held-out subjects, and this number — never seen during search — is reported.</p></blockquote>
+  <p>Adjust the constants (<code>α=0.5</code>, <code>κ=0.5</code>, <code>κ_UCB=1.0</code>, 29/30 iteration split, 2 held-out + 2 val subjects, subset cap of 4) to whatever values a given run actually used — every one is a named constant in <code>config.py</code>/<code>surrogate.py</code>, not hardcoded inline, so a specific run's exact values are recoverable from its logged config.</p>
+
+  <hr class="sep">
+  <p style="color:var(--fg-muted);font-size:0.9rem;">Questions? <code>harbench/finetune.py</code> (this repo) · <code>optimal_subset_selection/{loop,surrogate,features,candidate_pool,held_out,weighted_pool,manifest_builder,trial_runner}.py</code> · <code>heavyweight-similar-score/scoring.py</code> · <code>lightweight-score-unify/lightweight_check.py</code></p>
+
+</div>
+</body>
+</html>
