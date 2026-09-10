@@ -36,12 +36,14 @@ import argparse
 import json
 import os
 import random
+import copy
 from datetime import datetime
-from collections import defaultdict
+from collections import Counter, defaultdict
 
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, WeightedRandomSampler
 from tqdm import tqdm
 
@@ -53,7 +55,7 @@ from src.models import (
     LIMUBert, IMUVideoMAE,
     SelfPAB, MultiDeviceMaskedResnet, MultiDeviceResnetCPC,
 )
-from src.utils import macro_f1_score, accuracy, per_class_f1
+from src.utils import macro_f1_score, accuracy, per_class_f1, compute_confusion_matrix
 from src.losses.supcon import ProjectionHead, SupConLoss
 
 # Optional imports for foundation models
@@ -265,9 +267,60 @@ def set_seed(seed: int):
     torch.backends.cudnn.benchmark = False
 
 
+def _flatten_grad(grads, params):
+    """torch.autograd.grad(..., allow_unused=True) can return None for a
+    param the loss didn't touch -- treat that as a zero contribution rather
+    than dropping the param (keeps every flattened vector the same shape/
+    order across the two losses, required for a meaningful cosine similarity)."""
+    parts = [
+        g.reshape(-1) if g is not None else torch.zeros_like(p).reshape(-1)
+        for g, p in zip(grads, params)
+    ]
+    return torch.cat(parts)
+
+
+def _finalize_diagnostics(diag, epoch, dataset_id_map, alpha):
+    """train_epoch's raw per-epoch accumulator (the best/selected epoch's,
+    per train_model) into the report-ready shape: dataset_sample_counts
+    translated from int source_id -> dataset name via dataset_id_map's
+    reverse mapping, and sums turned into the means that are actually the
+    meaningful per-batch quantity.
+
+    alpha is threaded through (a fixed scalar for the whole trial, not a
+    per-epoch quantity) purely to derive the WEIGHTED loss terms doc item
+    33 asks for (alpha*raw_ce_loss, (1-alpha)*raw_scl_loss) alongside the
+    already-logged raw ones -- exact, since alpha doesn't vary within a
+    trial, not an approximation from separately-accumulated sums."""
+    if diag is None:
+        return None
+    id_to_name = {v: k for k, v in (dataset_id_map or {}).items()}
+    dataset_sample_counts = {
+        id_to_name.get(source_id, str(source_id)): count
+        for source_id, count in diag["dataset_sample_counts"].items()
+    }
+    grad_batches = diag["grad_batches"]
+    raw_ce_loss = diag["ce_loss_sum"] / diag["ce_loss_count"] if diag["ce_loss_count"] else None
+    raw_scl_loss = diag["scl_loss_sum"] / diag["scl_loss_count"] if diag["scl_loss_count"] else None
+    return {
+        "epoch": epoch,
+        "dataset_sample_counts": dataset_sample_counts,
+        "n_anchors": diag["n_anchors"],
+        "n_valid_anchors": diag["n_valid_anchors"],
+        "n_positive_pairs": diag["n_positive_pairs"],
+        "raw_ce_loss": raw_ce_loss,
+        "raw_scl_loss": raw_scl_loss,
+        "weighted_ce_loss": alpha * raw_ce_loss if raw_ce_loss is not None else None,
+        "weighted_scl_loss": (1 - alpha) * raw_scl_loss if raw_scl_loss is not None else None,
+        "grad_norm_target": diag["grad_norm_target_sum"] / grad_batches if grad_batches else None,
+        "grad_norm_ext": diag["grad_norm_ext_sum"] / grad_batches if grad_batches else None,
+        "grad_cosine_target_ext": diag["grad_cosine_sum"] / grad_batches if grad_batches else None,
+        "grad_batches": grad_batches,
+    }
+
+
 def train_epoch(model, loader, criterion, optimizer, device, model_type="resnet", max_iterations=None,
-                 loss_mode="ce", scl_weight=1.0, scl_criterion=None, projection_head=None,
-                 target_source_id=None):
+                 loss_mode="ce", alpha=0.5, scl_criterion=None, projection_head=None,
+                 target_source_id=None, diagnostics=False):
     """loss_mode="ce_scl" expects `loader` to yield (inputs, labels, source_id) batches
     (i.e. its dataset was built with return_source_id=True) and requires model_type to
     be a plain backbone+TwoLayerClassifier model ("patchtst"/"moment" foundation-model
@@ -275,10 +328,42 @@ def train_epoch(model, loader, criterion, optimizer, device, model_type="resnet"
     L_CE is computed only on samples whose source_id == target_source_id (the target
     dataset); L_SCL only on the remaining (source/baseline) samples. Either term is
     skipped (contributes 0) if its subset is empty in a given batch, rather than
-    raising on a degenerate mini-batch."""
+    raising on a degenerate mini-batch.
+
+    alpha is the target CE loss's direct share of the combined loss:
+    loss = alpha*ce_loss + (1-alpha)*scl_loss. Must be in (0, 1].
+
+    diagnostics=True (loss_mode="ce_scl" only) additionally accumulates, over
+    the whole epoch: realized per-source_id sample counts (Counter, as
+    opposed to the dataloader's own log line which is only the analytically
+    *expected* draw fraction); SupConLoss's anchor/positive-pair stats
+    (return_stats=True); the raw (unweighted) ce_loss/scl_loss values
+    separately from their combined, alpha-weighted `loss` (see
+    _finalize_diagnostics, which also derives the weighted counterparts
+    alpha*raw_ce_loss and (1-alpha)*raw_scl_loss from these); and, the
+    heavier lift, the gradient norm of the RAW (unweighted) L_target^CE and
+    L_SCL terms w.r.t. the shared backbone (two extra torch.autograd.grad
+    calls per batch -- real training-time cost, only paid when opted in)
+    plus their cosine similarity, for whichever batches have both terms
+    grad-connected (a batch missing one side has nothing to compare).
+    Returns (avg_loss, diag_dict_or_None)."""
+    if loss_mode == "ce_scl" and not (0 < alpha <= 1):
+        raise ValueError(f"alpha must be in (0, 1], got {alpha}")
     model.train()
     total_loss = 0.0
     total = 0
+
+    diag = None
+    if diagnostics and loss_mode == "ce_scl":
+        diag = {
+            "dataset_sample_counts": Counter(),
+            "n_anchors": 0, "n_valid_anchors": 0, "n_positive_pairs": 0,
+            "ce_loss_sum": 0.0, "ce_loss_count": 0,
+            "scl_loss_sum": 0.0, "scl_loss_count": 0,
+            "grad_norm_target_sum": 0.0, "grad_norm_ext_sum": 0.0,
+            "grad_cosine_sum": 0.0, "grad_batches": 0,
+        }
+        backbone_params = [p for p in model.backbone.parameters() if p.requires_grad]
 
     for i, batch in enumerate(tqdm(loader, desc="Training", leave=False)):
         if max_iterations is not None and i >= max_iterations:
@@ -305,6 +390,9 @@ def train_epoch(model, loader, criterion, optimizer, device, model_type="resnet"
             outputs = model(inputs)
 
         if loss_mode == "ce_scl":
+            if diag is not None:
+                diag["dataset_sample_counts"].update(source_id.cpu().tolist())
+
             target_mask = source_id == target_source_id
             source_mask = ~target_mask
             ce_loss = (
@@ -313,10 +401,50 @@ def train_epoch(model, loader, criterion, optimizer, device, model_type="resnet"
             )
             if source_mask.any():
                 projected = projection_head(features[source_mask])
-                scl_loss = scl_criterion(projected, labels[source_mask])
+                if diag is not None:
+                    scl_loss, scl_stats = scl_criterion(projected, labels[source_mask], return_stats=True)
+                    diag["n_anchors"] += scl_stats["n_anchors"]
+                    diag["n_valid_anchors"] += scl_stats["n_valid_anchors"]
+                    diag["n_positive_pairs"] += scl_stats["n_positive_pairs"]
+                else:
+                    scl_loss = scl_criterion(projected, labels[source_mask])
             else:
                 scl_loss = outputs.new_zeros(())
-            loss = ce_loss + scl_weight * scl_loss
+
+            if diag is not None:
+                if target_mask.any():
+                    diag["ce_loss_sum"] += ce_loss.item() * int(target_mask.sum())
+                    diag["ce_loss_count"] += int(target_mask.sum())
+                if source_mask.any():
+                    diag["scl_loss_sum"] += scl_loss.item() * int(source_mask.sum())
+                    diag["scl_loss_count"] += int(source_mask.sum())
+                # Gradient-norm/cosine diagnostics need both terms grad-connected
+                # to the shared backbone -- a batch with an empty target_mask or
+                # source_mask has nothing on one side to compare, so it's skipped
+                # for this stat (still contributes to the loss/count sums above).
+                if ce_loss.requires_grad and scl_loss.requires_grad:
+                    # Both grads taken from the raw (unweighted) losses --
+                    # "before weighting" per the doc's diagnostics item 35.
+                    # Cosine similarity is scale-invariant so this doesn't
+                    # change grad_cosine_target_ext either way, but the norms
+                    # themselves are only comparable "before weighting" if
+                    # neither side has alpha/(1-alpha) baked in.
+                    grad_target = torch.autograd.grad(ce_loss, backbone_params, retain_graph=True, allow_unused=True)
+                    grad_ext = torch.autograd.grad(scl_loss, backbone_params, retain_graph=True, allow_unused=True)
+                    flat_target = _flatten_grad(grad_target, backbone_params)
+                    flat_ext = _flatten_grad(grad_ext, backbone_params)
+                    norm_target = flat_target.norm().item()
+                    norm_ext = flat_ext.norm().item()
+                    cosine = (
+                        F.cosine_similarity(flat_target.unsqueeze(0), flat_ext.unsqueeze(0)).item()
+                        if norm_target > 0 and norm_ext > 0 else 0.0
+                    )
+                    diag["grad_norm_target_sum"] += norm_target
+                    diag["grad_norm_ext_sum"] += norm_ext
+                    diag["grad_cosine_sum"] += cosine
+                    diag["grad_batches"] += 1
+
+            loss = alpha * ce_loss + (1 - alpha) * scl_loss
         else:
             loss = criterion(outputs, labels)
 
@@ -333,11 +461,11 @@ def train_epoch(model, loader, criterion, optimizer, device, model_type="resnet"
         total_loss += loss.item() * inputs.size(0)
         total += labels.size(0)
 
-    return total_loss / total if total > 0 else 0
+    return (total_loss / total if total > 0 else 0), diag
 
 
 def evaluate(model, loader, criterion, device, model_type="resnet", loss_mode="ce", target_source_id=None,
-             return_per_class=False, n_classes=None, eval_label_ids=None):
+             return_per_class=False, return_confusion=False, n_classes=None, eval_label_ids=None):
     """loss_mode="ce_scl": `loader` yields (inputs, labels, source_id) batches. Both
     the reported loss AND F1/accuracy/per-class-F1 are computed over target-dataset
     samples only (falling back to every sample in the loader if the target
@@ -354,6 +482,11 @@ def evaluate(model, loader, criterion, device, model_type="resnet", loss_mode="c
     .claude/260826_task.md reward dilution fix). Falls back to n_classes (the
     classifier head size, i.e. the full pooled taxonomy) when eval_label_ids isn't
     given -- e.g. non-ce_scl callers where there's no single "target" to restrict to.
+
+    return_confusion=True (only meaningful together with return_per_class=True)
+    additionally returns a confusion matrix scored against the same
+    eval_label_ids/labels_arg as per-class F1, so rows/columns line up with
+    per_class_f1's class ordering.
     """
     model.eval()
     total_loss = 0.0
@@ -414,7 +547,10 @@ def evaluate(model, loader, criterion, device, model_type="resnet", loss_mode="c
     acc = accuracy(all_labels, all_preds)
 
     if return_per_class:
-        return loss, f1, acc, per_class_f1(all_labels, all_preds, labels=labels_arg)
+        result = (loss, f1, acc, per_class_f1(all_labels, all_preds, labels=labels_arg))
+        if return_confusion:
+            result += (compute_confusion_matrix(all_labels, all_preds, labels=labels_arg),)
+        return result
     return loss, f1, acc
 
 
@@ -535,7 +671,8 @@ def _extract_backbone_state_dict(model, model_type):
 
 def train_model(train_loader, val_loader, test_loader, n_classes, num_sensors,
                 weights_path, device, args, model_type="resnet", log_func=None,
-                return_backbone=False, target_source_id=None, eval_label_ids=None):
+                return_backbone=False, target_source_id=None, eval_label_ids=None,
+                dataset_id_map=None):
     """Train and evaluate a model.
 
     `args.loss_mode == "ce_scl"` requires `target_source_id` (the int id, from
@@ -547,6 +684,14 @@ def train_model(train_loader, val_loader, test_loader, n_classes, num_sensors,
     val-F1 used for early stopping/checkpoint selection, and the final test
     F1) -- see evaluate()'s docstring. Keeps checkpoint selection and the
     final reported metrics scored against the same class set.
+
+    dataset_id_map: {dataset_name: source_id}, only used (loss_mode="ce_scl",
+    getattr(args, "log_diagnostics", False)) to translate train_epoch's
+    per-source_id sample counts back to dataset names for the report. The
+    diagnostics kept in the returned metrics dict are whichever epoch's
+    train_epoch call actually produced best_model_state (the "is_best"
+    epoch below) -- diagnostics for a checkpoint that was later discarded by
+    early stopping aren't reportable as *this trial's* numbers.
     """
     if log_func is None:
         log_func = print
@@ -606,19 +751,23 @@ def train_model(train_loader, val_loader, test_loader, n_classes, num_sensors,
 
     best_val_f1 = 0.0
     best_model_state = None
+    best_diag = None
+    best_epoch = None
     patience_counter = 0
 
     import time
     start_time = time.time()
 
     max_iter = getattr(args, 'max_iterations', None)
-    scl_weight = getattr(args, "scl_weight", 1.0)
+    alpha = getattr(args, "alpha", 0.5)
+    log_diagnostics = loss_mode == "ce_scl" and getattr(args, "log_diagnostics", False)
     for epoch in range(args.epochs):
         epoch_start = time.time()
-        train_loss = train_epoch(
+        train_loss, epoch_diag = train_epoch(
             model, train_loader, criterion, optimizer, device, model_type, max_iterations=max_iter,
-            loss_mode=loss_mode, scl_weight=scl_weight, scl_criterion=scl_criterion,
+            loss_mode=loss_mode, alpha=alpha, scl_criterion=scl_criterion,
             projection_head=projection_head, target_source_id=target_source_id,
+            diagnostics=log_diagnostics,
         )
         val_loss, val_f1, val_acc = evaluate(
             model, val_loader, criterion, device, model_type,
@@ -637,7 +786,10 @@ def train_model(train_loader, val_loader, test_loader, n_classes, num_sensors,
 
         if is_best:
             best_val_f1 = val_f1
-            best_model_state = model.state_dict().copy()
+            # best_model_state = model.state_dict().copy()
+            best_model_state = copy.deepcopy(model.state_dict())
+            best_diag = epoch_diag
+            best_epoch = epoch + 1
             patience_counter = 0
         else:
             patience_counter += 1
@@ -662,10 +814,10 @@ def train_model(train_loader, val_loader, test_loader, n_classes, num_sensors,
     # validation performance (not test_f1) as a reward/comparison signal
     # without an extra ad hoc split (see .claude/260902_task.md task 5 and
     # run_finetune_pooled's --target_val_users handling).
-    _, _, _, val_f1_per_class = evaluate(
+    _, _, _, val_f1_per_class, val_confusion_matrix = evaluate(
         model, val_loader, criterion, device, model_type,
-        loss_mode=loss_mode, target_source_id=target_source_id, return_per_class=True, n_classes=n_classes,
-        eval_label_ids=eval_label_ids,
+        loss_mode=loss_mode, target_source_id=target_source_id, return_per_class=True,
+        return_confusion=True, n_classes=n_classes, eval_label_ids=eval_label_ids,
     )
 
     metrics = {
@@ -678,7 +830,14 @@ def train_model(train_loader, val_loader, test_loader, n_classes, num_sensors,
         # macro-F1 -> per-class-F1 reward-scalarization switch needs it.
         "test_f1_per_class": [float(v) for v in test_f1_per_class],
         "val_f1_per_class": [float(v) for v in val_f1_per_class],
+        # Rows/columns ordered the same as val_f1_per_class (both scored
+        # against eval_label_ids) -- doc's audit item "Macro-F1, per-class
+        # F1, and confusion matrix on D_t^val".
+        "val_confusion_matrix": val_confusion_matrix.tolist(),
     }
+
+    if log_diagnostics:
+        metrics["diagnostics"] = _finalize_diagnostics(best_diag, best_epoch, dataset_id_map, alpha)
 
     if return_backbone:
         return metrics, model
@@ -1076,6 +1235,9 @@ def run_finetune_pooled(args):
     target_source_id = None
     target_label_ids = None
     if loss_mode == "ce_scl":
+        target_dataset = getattr(args, "target_dataset", None)
+        if not target_dataset:
+            raise ValueError("loss_mode='ce_scl' requires --target_dataset")
         train_loader, val_loader, test_loader, dataset_id_map = create_dataloaders(
             X, Y, U, test_users, val_users,
             batch_size=args.batch_size, data_ratio=args.data_ratio,
@@ -1083,10 +1245,10 @@ def run_finetune_pooled(args):
             test_mask=test_mask, val_mask=val_mask,
             return_source_id=True,
             dataset_weights=dataset_weights, log_func=log,
+            shuffle_source_labels=getattr(args, "shuffle_source_labels", False),
+            shuffle_seed=getattr(args, "shuffle_seed", None),
+            target_dataset_name=target_dataset,
         )
-        target_dataset = getattr(args, "target_dataset", None)
-        if not target_dataset:
-            raise ValueError("loss_mode='ce_scl' requires --target_dataset")
         if target_dataset not in dataset_id_map:
             raise KeyError(
                 f"--target_dataset {target_dataset!r} not found among pooled manifest "
@@ -1120,6 +1282,7 @@ def run_finetune_pooled(args):
         return_backbone=True,
         target_source_id=target_source_id,
         eval_label_ids=target_label_ids,
+        dataset_id_map=dataset_id_map,
     )
 
     target_val_users = getattr(args, "target_val_users", None)
@@ -1169,7 +1332,7 @@ def run_finetune_pooled(args):
             "scheduler": "CosineAnnealingLR",
             "optimizer": "Adam",
             "data_ratio": args.data_ratio,
-            "scl_weight": getattr(args, "scl_weight", None) if loss_mode == "ce_scl" else None,
+            "alpha": getattr(args, "alpha", None) if loss_mode == "ce_scl" else None,
             "scl_temperature": getattr(args, "scl_temperature", None) if loss_mode == "ce_scl" else None,
         },
         "split": {"test": test_users, "val": val_users},
@@ -1351,6 +1514,7 @@ def run_finetune_multi_candidate(args):
             prior_weights_path, device, args, model_type=model_type,
             log_func=log, return_backbone=True,
             target_source_id=target_source_id, eval_label_ids=target_label_ids,
+            dataset_id_map=dataset_id_map,
         )
         log(f"[{tag}] pooled trial: val_F1={result['best_val_f1']:.4f}")
 
@@ -1384,6 +1548,7 @@ def run_finetune_multi_candidate(args):
             # the target now has no search-time test role once its val is
             # pinned via --target_val_users (see _pooled_train_val_test_masks).
             "pooled_search_time_val_f1": pooled_result["best_val_f1"],
+            "pooled_diagnostics": pooled_result.get("diagnostics"),
             **held_out_result,
         })
         log(json.dumps(results[-1]))
@@ -1917,10 +2082,19 @@ Examples:
                         help="Required with --loss_mode ce_scl: the 'dataset' name (matching one "
                              "entry's \"dataset\" field in --baseline_manifest) whose samples get "
                              "the L_CE term; all other pooled entries get the L_SCL term.")
-    parser.add_argument("--scl_weight", type=float, default=1.0,
-                        help="Weight on the L_SCL term when --loss_mode ce_scl (L = L_CE + scl_weight * L_SCL).")
+    parser.add_argument("--alpha", type=float, default=0.5,
+                        help="Target CE loss share when --loss_mode ce_scl (L = alpha*L_CE + (1-alpha)*L_SCL). Must be in (0, 1].")
     parser.add_argument("--scl_temperature", type=float, default=0.1,
                         help="SupConLoss temperature when --loss_mode ce_scl.")
+    parser.add_argument("--log_diagnostics", action="store_true",
+                        help="With --loss_mode ce_scl: accumulate, for the epoch that produced "
+                             "the checkpoint actually selected (best val F1), realized per-dataset "
+                             "sample counts, SupCon anchor/positive-pair counts, raw (unweighted) "
+                             "CE/SCL loss, and target/external gradient-norm+cosine-similarity "
+                             "diagnostics w.r.t. the shared backbone -- folded into results['result']"
+                             "['diagnostics']. Off by default: the gradient diagnostics add two "
+                             "extra torch.autograd.grad backward passes per training batch, a real "
+                             "training-time cost.")
     parser.add_argument("--use_manifest_weights", action="store_true",
                         help="With --baseline_manifest, read each pair's \"weight\":{\"requested\": "
                              "w_i} field (written by optimal_subset_selection's/llm_mfbo_agent's "
@@ -1928,6 +2102,15 @@ Examples:
                              "draw mass by it, instead of pure uniform (dataset, class) balancing. "
                              "Default off -- existing callers that don't emit a \"weight\" field are "
                              "unaffected either way.")
+    parser.add_argument("--shuffle_source_labels", action="store_true",
+                        help="Shuffled-label control: with --loss_mode ce_scl, permute the train-"
+                             "split labels of every pooled row that isn't --target_dataset, once, "
+                             "before training -- tests whether the external SupCon term's gain "
+                             "depends on real source-label semantics. --target_dataset's own rows "
+                             "and the val/test splits are untouched. Only wired into the single-"
+                             "candidate --baseline_manifest path, not --candidates_manifest_json.")
+    parser.add_argument("--shuffle_seed", type=int, default=None,
+                        help="RandomState seed for --shuffle_source_labels (default: unseeded).")
     parser.add_argument("--candidates_manifest_json", type=str, default=None,
                         help="Path to a JSON list of {\"candidate_id\", \"S\", \"w\", \"manifest\"} "
                              "(\"manifest\" is a --baseline_manifest-shaped [{dataset, sensors, "
