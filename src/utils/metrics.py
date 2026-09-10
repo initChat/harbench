@@ -60,15 +60,21 @@ def per_class_f1(y_true: np.ndarray, y_pred: np.ndarray, labels=None) -> np.ndar
     return f1_score(y_true, y_pred, average=None, labels=labels)
 
 
-def compute_confusion_matrix(y_true: np.ndarray, y_pred: np.ndarray) -> np.ndarray:
+def compute_confusion_matrix(y_true: np.ndarray, y_pred: np.ndarray, labels=None) -> np.ndarray:
     """
     Compute confusion matrix.
 
     Args:
         y_true: Ground truth labels (N,)
         y_pred: Predicted labels (N,)
+        labels: fixed label set/order to score against (see
+            macro_f1_score's labels docstring) -- pass the same
+            eval_label_ids used for macro_f1_score/per_class_f1 on the
+            same predictions, so rows/columns line up with per-class F1
+            instead of sklearn's default (inferred from y_true/y_pred,
+            which can vary in size/order across calls).
 
     Returns:
         Confusion matrix (n_classes, n_classes)
     """
-    return confusion_matrix(y_true, y_pred)
+    return confusion_matrix(y_true, y_pred, labels=labels)

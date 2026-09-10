@@ -406,7 +406,8 @@ def load_pooled_datasets(pairs, modality="ACC"):
 def create_dataloaders(X, Y, U, test_users, val_users, batch_size=64, num_workers=0, data_ratio=1.0,
                        use_weighted_sampler=True, max_samples_per_epoch=None,
                        test_mask=None, val_mask=None, return_source_id=False,
-                       dataset_weights=None, log_func=None):
+                       dataset_weights=None, log_func=None,
+                       shuffle_source_labels=False, shuffle_seed=None, target_dataset_name=None):
     """
     Create DataLoaders for train/val/test.
 
@@ -431,15 +432,36 @@ def create_dataloaders(X, Y, U, test_users, val_users, batch_size=64, num_worker
             3rd (source_id) element, and additionally return a {dataset_name: int}
             id map as a 4th return value. Default off -- existing 3-tuple-unpacking
             callers are unaffected.
-        dataset_weights: Optional {dataset_name: weight} to scale each source
-            dataset's total per-epoch draw mass in the weighted sampler, on top
-            of the existing (dataset, class) balancing. A dataset absent from
-            the dict defaults to weight 1.0. None (default) preserves today's
-            behavior exactly -- pure uniform (dataset, class) balancing.
+        dataset_weights: Optional {dataset_name: weight} controlling each source
+            dataset's total per-epoch draw mass in the weighted sampler --
+            mass equals the requested weight exactly (weights need not sum to
+            1; the realized fraction is that weight normalized against the
+            sum of every present dataset's weight, target datasets included
+            even when absent from this dict, since absent defaults to 1.0).
+            Within a dataset, that mass is still split evenly across its own
+            classes (the pre-existing (dataset, class) imbalance correction),
+            so a dataset's class balance is unaffected by this option. A
+            dataset absent from the dict defaults to weight 1.0. None
+            (default) preserves today's behavior exactly -- pure uniform
+            (dataset, class) balancing.
         log_func: Optional callable(str). When dataset_weights is given, used to
-            log the resulting expected per-dataset sampling fraction (see the
-            (dataset, class)-grouping nuance in the docstring below) so it can
+            log the resulting expected per-dataset sampling fraction so it can
             be checked against the requested weights.
+        shuffle_source_labels: Shuffled-label control (see phase2_finetune_
+            for_targetDataset/.claude/260904_plan_scl_weight_sweep.md's
+            Phase 2 section) -- once, before any few-shot subsampling,
+            permute Y_train among every train-split row whose dataset
+            prefix isn't target_dataset_name (X_train and source_id_train
+            stay aligned to the original row order; only the label is
+            scrambled for source/baseline rows). val/test and the target's
+            own rows are untouched. Requires return_source_id=True and
+            target_dataset_name. Default off -- existing callers unaffected.
+        shuffle_seed: RandomState seed for shuffle_source_labels (own local
+            RNG, doesn't touch/consume the global np.random state used by
+            the data_ratio few-shot sampler below).
+        target_dataset_name: Required with shuffle_source_labels=True -- the
+            "dataset" name (matching U's "<dataset>::<user>" prefix) whose
+            rows are exempt from the label permutation.
 
     Returns:
         train_loader, val_loader, test_loader
@@ -488,6 +510,22 @@ def create_dataloaders(X, Y, U, test_users, val_users, batch_size=64, num_worker
         source_id_train = ds_id_all[train_mask]
         source_id_val = ds_id_all[val_mask]
         source_id_test = ds_id_all[test_mask]
+
+    if shuffle_source_labels:
+        if not return_source_id:
+            raise ValueError(
+                "shuffle_source_labels=True requires return_source_id=True -- needs the "
+                "per-sample dataset prefix to know which rows are 'source' vs. target."
+            )
+        if target_dataset_name is None:
+            raise ValueError(
+                "shuffle_source_labels=True requires target_dataset_name -- every other "
+                "pooled dataset's train-split labels get permuted, so the target's own "
+                "rows must be identified to stay exempt."
+            )
+        source_row_mask = ds_prefix_all[train_mask] != target_dataset_name
+        Y_train = Y_train.copy()
+        Y_train[source_row_mask] = np.random.RandomState(shuffle_seed).permutation(Y_train[source_row_mask])
 
     # Save original training data count (for samples_per_epoch calculation in few-shot)
     n_train_original = len(X_train)
@@ -540,14 +578,27 @@ def create_dataloaders(X, Y, U, test_users, val_users, batch_size=64, num_worker
         train_dataset_ids = [str(u).split("::", 1)[0] if "::" in str(u) else "" for u in U[train_mask]]
         group_count = Counter(zip(train_dataset_ids, Y_train.tolist()))
         if dataset_weights:
+            # Two-level weighting: a dataset's total sampled mass must equal
+            # its declared dataset_weights entry *exactly*, independent of
+            # how many classes it has -- naively reusing the (dataset, class)
+            # formula below (weight / count) makes a dataset's realized mass
+            # scale with its class count (mass = weight * num_classes), which
+            # silently skews cross-dataset composition by an unrelated
+            # variable. Dividing the dataset weight by its own class count
+            # first cancels that out (mass = weight exactly), while still
+            # splitting that mass evenly across the dataset's classes --
+            # preserving today's within-dataset class-imbalance correction.
+            classes_per_dataset = defaultdict(set)
+            for ds, cls in group_count:
+                classes_per_dataset[ds].add(cls)
             group_weights = {
-                group: dataset_weights.get(group[0], 1.0) / count
-                for group, count in group_count.items()
+                (ds, cls): dataset_weights.get(ds, 1.0) / len(classes_per_dataset[ds]) / count
+                for (ds, cls), count in group_count.items()
             }
             if log_func is not None:
-                # Per (dataset, class) group, total sampled mass = count * (w_ds / count) = w_ds,
-                # so a dataset's total mass is w_ds * (number of its distinct classes) -- see
-                # the (dataset, class)-grouping nuance in create_dataloaders' docstring.
+                # Per (dataset, class) group, sampled mass = count * weight = weight_ds /
+                # num_classes_ds; summed across all of a dataset's classes, its total mass
+                # equals the dataset's declared dataset_weights entry exactly (see above).
                 ds_mass = defaultdict(float)
                 for (ds, cls), weight in group_weights.items():
                     ds_mass[ds] += weight * group_count[(ds, cls)]

@@ -175,9 +175,9 @@ def test_train_epoch_evaluate_ce_scl_smoke():
     optimizer = torch.optim.Adam(list(model.parameters()) + list(projection_head.parameters()), lr=1e-3)
     device = torch.device("cpu")
 
-    train_loss = train_epoch(
+    train_loss, _train_diag = train_epoch(
         model, train_loader, criterion, optimizer, device, model_type="resnet",
-        loss_mode="ce_scl", scl_weight=1.0, scl_criterion=scl_criterion,
+        loss_mode="ce_scl", alpha=0.5, scl_criterion=scl_criterion,
         projection_head=projection_head, target_source_id=target_source_id,
     )
     assert np.isfinite(train_loss)
@@ -283,7 +283,7 @@ def test_ce_mode_backward_compatible():
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
     device = torch.device("cpu")
 
-    train_loss = train_epoch(model, train_loader, criterion, optimizer, device, model_type="resnet")
+    train_loss, _train_diag = train_epoch(model, train_loader, criterion, optimizer, device, model_type="resnet")
     assert np.isfinite(train_loss)
     val_loss, val_f1, val_acc = evaluate(model, val_loader, criterion, device, model_type="resnet")
     assert np.isfinite(val_loss)
@@ -338,6 +338,47 @@ def test_dataset_weights_sampler():
     print("test_dataset_weights_sampler: PASS")
 
 
+def test_dataset_weights_sampler_unequal_classes():
+    """Regression for the per-(dataset, class) grouping confound: previously
+    a dataset's realized sampled mass was requested_weight * its own class
+    count, so two datasets given the SAME weight but a DIFFERENT number of
+    classes ended up with different realized fractions. dsA has 2 classes,
+    dsB has 6 -- under the old formula requesting equal weights would have
+    produced roughly a 1:3 split (2:6) instead of the requested 1:1."""
+    rng = np.random.RandomState(0)
+    X_parts, Y_parts, U_parts = [], [], []
+    for ds, n_classes in (("dsA", 2), ("dsB", 6)):
+        for user in range(1, 7):
+            x = rng.randn(30, 3, 16).astype(np.float32)
+            y = rng.randint(0, n_classes, size=30)
+            X_parts.append(x)
+            Y_parts.append(y)
+            U_parts.extend([f"{ds}::{user}"] * 30)
+    X = np.concatenate(X_parts, axis=0)
+    Y = np.concatenate(Y_parts, axis=0)
+    U = np.array(U_parts)
+
+    test_users = ["dsA::5", "dsA::6", "dsB::5", "dsB::6"]
+    val_users = ["dsA::3", "dsA::4", "dsB::3", "dsB::4"]
+
+    dataset_weights = {"dsA": 1.0, "dsB": 1.0}
+    train_loader, _, _, dataset_id_map = create_dataloaders(
+        X, Y, U, test_users, val_users, batch_size=32, num_workers=0,
+        return_source_id=True, dataset_weights=dataset_weights,
+    )
+
+    counts = Counter()
+    for _ in range(30):
+        for _, _, source_id in train_loader:
+            counts.update(source_id.tolist())
+    total = sum(counts.values())
+    frac_dsA = counts[dataset_id_map["dsA"]] / total
+    frac_dsB = counts[dataset_id_map["dsB"]] / total
+    assert abs(frac_dsA - 0.5) < 0.03, f"frac_dsA={frac_dsA} (expected ~0.5, unaffected by class count)"
+    assert abs(frac_dsB - 0.5) < 0.03, f"frac_dsB={frac_dsB} (expected ~0.5, unaffected by class count)"
+    print("test_dataset_weights_sampler_unequal_classes: PASS")
+
+
 if __name__ == "__main__":
     test_hardataset_source_id()
     test_create_dataloaders_return_source_id()
@@ -347,4 +388,5 @@ if __name__ == "__main__":
     test_eval_label_ids_restricts_scoring()
     test_ce_mode_backward_compatible()
     test_dataset_weights_sampler()
+    test_dataset_weights_sampler_unequal_classes()
     print("\nAll CE+SCL tests passed.")

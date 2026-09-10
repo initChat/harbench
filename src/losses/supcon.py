@@ -45,10 +45,21 @@ class SupConLoss(nn.Module):
         super().__init__()
         self.temperature = temperature
 
-    def forward(self, embeddings: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+    def forward(self, embeddings: torch.Tensor, labels: torch.Tensor, return_stats: bool = False):
+        """return_stats=True additionally returns {"n_anchors", "n_valid_anchors",
+        "n_positive_pairs"} -- values SupCon already computes internally every
+        call (n = anchors fed this batch, n_valid_anchors = anchors with >=1
+        same-label peer, n_positive_pairs = unordered same-label pairs
+        excluding self) but previously discarded. Surfaces how often
+        anchors_with_positive is empty for a whole batch (e.g. a thin source
+        rarely getting 2+ same-class samples per batch), which silently
+        zeros scl_loss today with no visibility."""
         n = embeddings.size(0)
         if n < 2:
-            return embeddings.new_zeros(())
+            loss = embeddings.new_zeros(())
+            if return_stats:
+                return loss, {"n_anchors": n, "n_valid_anchors": 0, "n_positive_pairs": 0}
+            return loss
 
         device = embeddings.device
         labels = labels.view(-1, 1)
@@ -57,8 +68,13 @@ class SupConLoss(nn.Module):
         positive_mask = same_label.masked_fill(self_mask, 0.0)
 
         anchors_with_positive = positive_mask.sum(dim=1) > 0
+        n_valid_anchors = int(anchors_with_positive.sum().item())
+        n_positive_pairs = int(positive_mask.sum().item() // 2)
         if not anchors_with_positive.any():
-            return embeddings.new_zeros(())
+            loss = embeddings.new_zeros(())
+            if return_stats:
+                return loss, {"n_anchors": n, "n_valid_anchors": n_valid_anchors, "n_positive_pairs": n_positive_pairs}
+            return loss
 
         sim = torch.matmul(embeddings, embeddings.T) / self.temperature
         sim = sim.masked_fill(self_mask, float("-inf"))
@@ -73,4 +89,7 @@ class SupConLoss(nn.Module):
         mean_log_prob_pos = (positive_mask * log_prob).sum(dim=1) / positive_counts
 
         loss_per_anchor = -mean_log_prob_pos[anchors_with_positive]
-        return loss_per_anchor.mean()
+        loss = loss_per_anchor.mean()
+        if return_stats:
+            return loss, {"n_anchors": n, "n_valid_anchors": n_valid_anchors, "n_positive_pairs": n_positive_pairs}
+        return loss
