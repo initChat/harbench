@@ -728,6 +728,11 @@ def collect_pretrain_files(datasets, sensors=None, data_root=None, modality="ACC
             already uses for finetune.py's --baseline_manifest. A dict entry's own
             "data_root" always wins; `data_root` below is only the fallback for plain
             name entries (or a dict entry that omits "data_root").
+            A dict entry may also carry "exclude": a list of "USERxxxxx" (drop the
+            whole user) or "USERxxxxx/<sensor>" (drop one user/sensor dir) strings,
+            relative to the dataset dir -- row-level filtering for a pool built
+            from a quality gate. An exclude entry that matches no on-disk dir
+            raises ValueError (a typo would otherwise silently keep the row).
         sensors: List of sensor names (None = auto-detect all sensors)
         data_root: Data root path, used for any entry that doesn't supply its own
         modality: Modality
@@ -744,9 +749,11 @@ def collect_pretrain_files(datasets, sensors=None, data_root=None, modality="ACC
         if isinstance(entry, dict):
             dataset = entry["dataset"]
             entry_root = entry.get("data_root") or data_root or DEFAULT_DATA_ROOT
+            exclude = set(entry.get("exclude") or [])
         else:
             dataset = entry
             entry_root = data_root or DEFAULT_DATA_ROOT
+            exclude = set()
 
         dataset_path = _resolve_dataset_dir(entry_root, dataset)
         if not os.path.exists(dataset_path):
@@ -754,10 +761,21 @@ def collect_pretrain_files(datasets, sensors=None, data_root=None, modality="ACC
             skipped_datasets.append(dataset)
             continue
 
+        unmatched = sorted(e for e in exclude if not os.path.isdir(os.path.join(dataset_path, e)))
+        if unmatched:
+            raise ValueError(f"{dataset}: exclude entries match no dir under {dataset_path}: {unmatched}")
+
         users = sorted([d for d in os.listdir(dataset_path) if d.startswith("USER")])
+        n_excluded = 0
 
         for user in users:
             user_path = os.path.join(dataset_path, user)
+            if user in exclude:
+                n_excluded += sum(
+                    os.path.exists(os.path.join(user_path, d, modality, "X.npy"))
+                    for d in os.listdir(user_path)
+                )
+                continue
 
             # If sensors is None, auto-detect all sensors
             if sensors is None:
@@ -769,9 +787,15 @@ def collect_pretrain_files(datasets, sensors=None, data_root=None, modality="ACC
                 available_sensors = sensors
 
             for sensor in available_sensors:
+                if f"{user}/{sensor}" in exclude:
+                    n_excluded += os.path.exists(os.path.join(user_path, sensor, modality, "X.npy"))
+                    continue
                 x_path = os.path.join(user_path, sensor, modality, "X.npy")
                 if os.path.exists(x_path):
                     file_paths.append(x_path)
+
+        if exclude:
+            print(f"{dataset}: excluded {n_excluded} {modality} files ({len(exclude)} exclude entries)")
 
     return file_paths, skipped_datasets
 
