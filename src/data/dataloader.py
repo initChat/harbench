@@ -125,6 +125,11 @@ USABLE_CLASSES = {
 
     # VTT_CONIOT: All 16 classes used
     "vtt_coniot": None,
+
+    # Older adults (lumbar): 10 -> 5 classes
+    # usable: sit(0), stand(1), walk(2), lie_back(3), lie_right(4)
+    # Excluded: transfer classes 5-9 (0-1 windows each on disk)
+    "real_accelerometer_dataset_older_adults_har": [0, 1, 2, 3, 4],
 }
 
 def _resolve_dataset_dir(data_root, dataset):

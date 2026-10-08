@@ -37,8 +37,8 @@ from src.dataset_taxonomy import filter_by_activity, get_dataset_groups
 app = Flask(__name__)
 
 # Global settings
-# DATA_DIR = Path('data/processed')
-DATA_DIR = Path('C:\\Users\\chatc\\Workarea\\Dataset\\All\\preprocessed\\processed_260612')  # Update this path if needed
+# Override with --data-dir (e.g. C:\\Users\\chatc\\Workarea\\Dataset\\All\\preprocessed\\processed_260612)
+DATA_DIR = Path(__file__).parent / 'data' / 'processed'
 
 # Helper function to get activity name from dataset name
 def get_activity_name(dataset_name: str, class_id: int) -> str:
@@ -3234,12 +3234,17 @@ def compare():
 
 
 def main():
+    global DATA_DIR
     parser = argparse.ArgumentParser(description='HAR Data Visualization Web App')
-    parser.add_argument('--port', type=int, default=5001, help='Port number (default: 5000)')
+    parser.add_argument('--port', type=int, default=5001, help='Port number (default: 5001)')
+    parser.add_argument('--data-dir', type=str, default=None, help=f'Processed data directory (default: {DATA_DIR})')
     parser.add_argument('--no-debug', action='store_true', help='Disable debug mode (default: enabled)')
     parser.add_argument('--host', type=str, default='127.0.0.1', help='Host address (default: 127.0.0.1)')
 
     args = parser.parse_args()
+
+    if args.data_dir:
+        DATA_DIR = Path(args.data_dir)
 
     # Debug mode enabled by default (hot reload supported)
     debug_mode = not args.no_debug
