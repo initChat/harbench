@@ -119,8 +119,16 @@ def select_columns_opp(data):
 #   LLA  : ACC[72-74]  GYRO[75-77]  MAG[78-80]
 #
 # Shoe sensors (no magnetometer; Body_Acc + AngVelBody used):
-#   L_SHOE: Body_Acc[84-86]  AngVelBody[90-92]   (full 16-ch block: 81-96)
-#   R_SHOE: Body_Acc[100-102] AngVelBody[106-108] (full 16-ch block: 97-112)
+#   L_SHOE: Body_Acc[87-89]  AngVelBody[90-92]   (full 16-ch block: 81-96;
+#           Euler[81-83], Nav_Acc[84-86] (gravity-removed, nav frame), ...)
+#   R_SHOE: Body_Acc[103-105] AngVelBody[106-108] (full 16-ch block: 97-112;
+#           Euler[97-99], Nav_Acc[100-102], ...)
+#
+# Raw units (dataset/column_names.txt): every ACC channel is milli g; IMU gyro
+# and magnetic, and shoe AngVelBody, are stored as round(original * 1000)
+# (Xsens gyro rad/s, Xsens mag normalized a.u. with Earth's field ~1, shoe
+# angular velocity rad/s), so GYRO/MAG are divided by GYRO_MAG_SCALE_FACTOR.
+GYRO_MAG_SCALE_FACTOR = 1000.0
 SENSOR_GROUPS = {
     'BACK': {
         'channels': list(range(36, 45)),
@@ -165,14 +173,14 @@ SENSOR_GROUPS = {
     'L_SHOE': {  # Left Shoe (InertiaCube3) — no magnetometer
         'channels': list(range(81, 97)),
         'modalities': {
-            'ACC': list(range(84, 87)),   # Body_Acc XYZ
+            'ACC': list(range(87, 90)),   # Body_Acc XYZ (84-86 is Nav_Acc)
             'GYRO': list(range(90, 93)),  # AngVelBody XYZ
         }
     },
     'R_SHOE': {  # Right Shoe (InertiaCube3) — no magnetometer
         'channels': list(range(97, 113)),
         'modalities': {
-            'ACC': list(range(100, 103)),  # Body_Acc XYZ
+            'ACC': list(range(103, 106)),  # Body_Acc XYZ (100-102 is Nav_Acc)
             'GYRO': list(range(106, 109)), # AngVelBody XYZ
         }
     },
@@ -513,6 +521,9 @@ class OpportunityPreprocessor(BasePreprocessor):
                     if modality_name == 'ACC' and self.scale_factor is not None:
                         windowed_data = windowed_data / self.scale_factor
                         logger.info(f"  Applied scale_factor={self.scale_factor} to {sensor_name}/{modality_name}")
+                    elif modality_name in ('GYRO', 'MAG'):
+                        # milli-units -> rad/s (GYRO) / normalized a.u. (MAG)
+                        windowed_data = windowed_data / GYRO_MAG_SCALE_FACTOR
 
                     # Reshape: (num_windows, window_size, channels) -> (num_windows, channels, window_size)
                     windowed_data = np.transpose(windowed_data, (0, 2, 1))
@@ -563,6 +574,8 @@ class OpportunityPreprocessor(BasePreprocessor):
             'stride': self.stride,
             'normalization': 'none',  # No normalization (keep raw data)
             'scale_factor': self.scale_factor,  # Scaling factor (applied to ACC only)
+            'gyro_mag_scale_factor': GYRO_MAG_SCALE_FACTOR,  # GYRO/MAG divisor
+            'units': {'ACC': 'g', 'GYRO': 'rad/s', 'MAG': 'normalized a.u. (Earth field ~1)'},
             'data_dtype': 'float16',  # Data type
             'users': {}
         }
