@@ -464,6 +464,29 @@ def train_epoch(model, loader, criterion, optimizer, device, model_type="resnet"
     return (total_loss / total if total > 0 else 0), diag
 
 
+def _users_are_str(U):
+    return np.asarray(U).dtype.kind in ("U", "S", "O")
+
+
+def _shared_label_ids(Y, U, users, restrict_ids=None):
+    """Sorted label ids present in EVERY one of `users`' windows (U holds the
+    per-window user key, same spelling as `users`). A class missing from any
+    one of those users can't be scored fairly -- it contributes F1=0 and caps
+    macro-F1 -- so val/held-out scoring is restricted to the classes all of
+    them have. restrict_ids, when given, further limits to those ids (e.g.
+    the target's own classes inside a pooled taxonomy). Returns None when
+    `users` is empty/absent from U (caller keeps its legacy label set)."""
+    U = np.asarray(U)
+    Y = np.asarray(Y)
+    per_user = [set(np.unique(Y[U == u]).tolist()) for u in (users or []) if (U == u).any()]
+    if not per_user:
+        return None
+    shared = set.intersection(*per_user)
+    if restrict_ids is not None:
+        shared &= set(int(i) for i in restrict_ids)
+    return sorted(int(i) for i in shared)
+
+
 def evaluate(model, loader, criterion, device, model_type="resnet", loss_mode="ce", target_source_id=None,
              return_per_class=False, return_confusion=False, n_classes=None, eval_label_ids=None):
     """loss_mode="ce_scl": `loader` yields (inputs, labels, source_id) batches. Both
@@ -672,6 +695,7 @@ def _extract_backbone_state_dict(model, model_type):
 def train_model(train_loader, val_loader, test_loader, n_classes, num_sensors,
                 weights_path, device, args, model_type="resnet", log_func=None,
                 return_backbone=False, target_source_id=None, eval_label_ids=None,
+                val_eval_label_ids=None, test_eval_label_ids=None,
                 dataset_id_map=None):
     """Train and evaluate a model.
 
@@ -679,6 +703,11 @@ def train_model(train_loader, val_loader, test_loader, n_classes, num_sensors,
     create_dataloaders(return_source_id=True)'s dataset_id_map, of the target
     dataset within the pool) and only supports plain backbone+TwoLayerClassifier
     models -- raises on "patchtst"/"moment", which don't expose return_features.
+
+    val_eval_label_ids / test_eval_label_ids: when given, the val (per-epoch
+    selection + final per-class/confusion) resp. test scoring uses this label
+    set instead of eval_label_ids -- see _shared_label_ids(). The legacy
+    all-class numbers are then also reported under *_all_classes keys.
 
     eval_label_ids: forwarded to every evaluate() call (both the per-epoch
     val-F1 used for early stopping/checkpoint selection, and the final test
@@ -749,6 +778,8 @@ def train_model(train_loader, val_loader, test_loader, n_classes, num_sensors,
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
     criterion = nn.CrossEntropyLoss()
 
+    val_ids = val_eval_label_ids if val_eval_label_ids is not None else eval_label_ids
+    test_ids = test_eval_label_ids if test_eval_label_ids is not None else eval_label_ids
     best_val_f1 = 0.0
     best_model_state = None
     best_diag = None
@@ -772,7 +803,7 @@ def train_model(train_loader, val_loader, test_loader, n_classes, num_sensors,
         val_loss, val_f1, val_acc = evaluate(
             model, val_loader, criterion, device, model_type,
             loss_mode=loss_mode, target_source_id=target_source_id, n_classes=n_classes,
-            eval_label_ids=eval_label_ids,
+            eval_label_ids=val_ids,
         )
         epoch_time = time.time() - epoch_start
         total_time = time.time() - start_time
@@ -807,7 +838,7 @@ def train_model(train_loader, val_loader, test_loader, n_classes, num_sensors,
     test_loss, test_f1, test_acc, test_f1_per_class = evaluate(
         model, test_loader, criterion, device, model_type,
         loss_mode=loss_mode, target_source_id=target_source_id, return_per_class=True, n_classes=n_classes,
-        eval_label_ids=eval_label_ids,
+        eval_label_ids=test_ids,
     )
     # Per-class val F1 on the same frozen best_model_state, alongside the
     # scalar best_val_f1 already tracked per-epoch above -- lets a caller use
@@ -817,7 +848,7 @@ def train_model(train_loader, val_loader, test_loader, n_classes, num_sensors,
     _, _, _, val_f1_per_class, val_confusion_matrix = evaluate(
         model, val_loader, criterion, device, model_type,
         loss_mode=loss_mode, target_source_id=target_source_id, return_per_class=True,
-        return_confusion=True, n_classes=n_classes, eval_label_ids=eval_label_ids,
+        return_confusion=True, n_classes=n_classes, eval_label_ids=val_ids,
     )
 
     metrics = {
@@ -835,6 +866,26 @@ def train_model(train_loader, val_loader, test_loader, n_classes, num_sensors,
         # F1, and confusion matrix on D_t^val".
         "val_confusion_matrix": val_confusion_matrix.tolist(),
     }
+
+    if val_eval_label_ids is not None or test_eval_label_ids is not None:
+        metrics["val_label_ids"] = list(val_ids) if val_ids is not None else None
+        metrics["test_label_ids"] = list(test_ids) if test_ids is not None else None
+        # Legacy numbers (every class in eval_label_ids / n_classes, absent classes
+        # score F1=0) on the same best-epoch model, so old runs stay comparable.
+        # best_val_f1_all_classes is scored post hoc; epoch selection used the
+        # shared-class val F1 above, so it is not the max over epochs.
+        _, v_all, _, v_all_pc = evaluate(
+            model, val_loader, criterion, device, model_type, loss_mode=loss_mode,
+            target_source_id=target_source_id, return_per_class=True, n_classes=n_classes,
+            eval_label_ids=eval_label_ids)
+        _, t_all, _, t_all_pc = evaluate(
+            model, test_loader, criterion, device, model_type, loss_mode=loss_mode,
+            target_source_id=target_source_id, return_per_class=True, n_classes=n_classes,
+            eval_label_ids=eval_label_ids)
+        metrics["best_val_f1_all_classes"] = float(v_all)
+        metrics["val_f1_per_class_all_classes"] = [float(v) for v in v_all_pc]
+        metrics["test_f1_all_classes"] = float(t_all)
+        metrics["test_f1_per_class_all_classes"] = [float(v) for v in t_all_pc]
 
     if log_diagnostics:
         metrics["diagnostics"] = _finalize_diagnostics(best_diag, best_epoch, dataset_id_map, alpha)
@@ -1023,6 +1074,14 @@ def run_finetune_single_split(args):
         max_samples_per_epoch=args.max_samples_per_epoch
     )
 
+    # Held-out run (custom users): score only classes present in BOTH users of
+    # each role, not every class in the target (see _shared_label_ids()).
+    val_label_ids = test_label_ids = None
+    if args.custom_test_users and args.custom_val_users:
+        test_label_ids = _shared_label_ids(Y, U, [str(u) for u in fold["test"]] if _users_are_str(U) else fold["test"])
+        val_label_ids = _shared_label_ids(Y, U, [str(u) for u in fold["val"]] if _users_are_str(U) else fold["val"])
+        log(f"Shared-class scoring: test classes {test_label_ids}, val classes {val_label_ids}")
+
     result, model = train_model(
         train_loader, val_loader, test_loader,
         n_classes, num_sensors,
@@ -1030,6 +1089,7 @@ def run_finetune_single_split(args):
         model_type=model_type,
         log_func=log,
         return_backbone=True,
+        val_eval_label_ids=val_label_ids, test_eval_label_ids=test_label_ids,
     )
 
     log(f"Result: F1={result['test_f1']:.4f}, Acc={result['test_acc']:.4f}")
@@ -1273,6 +1333,14 @@ def run_finetune_pooled(args):
             test_mask=test_mask, val_mask=val_mask,
         )
 
+    target_val_users = getattr(args, "target_val_users", None)
+    val_label_ids = None
+    if target_val_users is not None and target_label_ids is not None:
+        val_label_ids = _shared_label_ids(
+            Y, U, [f"{args.target_dataset}::{u}" for u in target_val_users], restrict_ids=target_label_ids)
+        log(f"Shared-class val scoring: {len(val_label_ids or [])}/{len(target_label_ids)} target classes "
+            f"present in every val user ({[group_names[i] for i in (val_label_ids or [])]})")
+
     result, model = train_model(
         train_loader, val_loader, test_loader,
         n_classes, num_sensors,
@@ -1282,10 +1350,10 @@ def run_finetune_pooled(args):
         return_backbone=True,
         target_source_id=target_source_id,
         eval_label_ids=target_label_ids,
+        val_eval_label_ids=val_label_ids,
         dataset_id_map=dataset_id_map,
     )
 
-    target_val_users = getattr(args, "target_val_users", None)
     if target_val_users is not None:
         # test_loader now holds zero target samples (the target's val role was
         # pinned above, so it got no auto test role at all) -- evaluate()'s
@@ -1323,6 +1391,8 @@ def run_finetune_pooled(args):
         "target_dataset": getattr(args, "target_dataset", None),
         "target_label_ids": target_label_ids,
         "target_group_names": [group_names[i] for i in target_label_ids] if target_label_ids is not None else None,
+        # Class names the (shared-class) val_f1_per_class/val_confusion_matrix rows follow.
+        "val_group_names": [group_names[i] for i in val_label_ids] if val_label_ids else None,
         "hyperparameters": {
             "epochs": args.epochs,
             "batch_size": args.batch_size,
@@ -1428,6 +1498,11 @@ def run_finetune_multi_candidate(args):
     num_sensors_t = len(args.sensors)
     held_out_fold = {"test": args.custom_test_users, "val": args.custom_val_users}
     log(f"Held-out fold: test_users={held_out_fold['test']}, val_users={held_out_fold['val']}")
+    # Score only classes present in BOTH users of each role (see _shared_label_ids()).
+    _as_keys = (lambda us: [str(u) for u in us]) if _users_are_str(U_t) else (lambda us: list(us))
+    ho_test_label_ids = _shared_label_ids(Y_t, U_t, _as_keys(held_out_fold["test"]))
+    ho_val_label_ids = _shared_label_ids(Y_t, U_t, _as_keys(held_out_fold["val"]))
+    log(f"Shared-class scoring: test classes {ho_test_label_ids}, val classes {ho_val_label_ids}")
 
     def _held_out_eval(weights_path, tag):
         """Same single-split finetune+eval held_out.run_held_out_eval()
@@ -1446,6 +1521,7 @@ def run_finetune_multi_candidate(args):
             train_loader, val_loader, test_loader, n_classes_t, num_sensors_t,
             weights_path, device, args, model_type=model_type,
             log_func=log, return_backbone=True,
+            val_eval_label_ids=ho_val_label_ids, test_eval_label_ids=ho_test_label_ids,
         )
         log(f"[{tag}] held-out eval: F1={result['test_f1']:.4f}, Acc={result['test_acc']:.4f}")
         del model
@@ -1508,12 +1584,17 @@ def run_finetune_multi_candidate(args):
         target_source_id = dataset_id_map[target_dataset_name]
         target_label_ids = _resolve_target_label_ids(target_dataset_name, pairs, group_names)
         log(f"[{tag}] scoring against target's own classes: {len(target_label_ids)}/{n_classes}")
+        val_label_ids = _shared_label_ids(
+            Y, U, [f"{target_dataset_name}::{u}" for u in args.custom_val_users],
+            restrict_ids=target_label_ids)
+        log(f"[{tag}] shared-class val scoring: {val_label_ids}")
 
         result, model = train_model(
             train_loader, val_loader, test_loader, n_classes, num_sensors,
             prior_weights_path, device, args, model_type=model_type,
             log_func=log, return_backbone=True,
             target_source_id=target_source_id, eval_label_ids=target_label_ids,
+            val_eval_label_ids=val_label_ids,
             dataset_id_map=dataset_id_map,
         )
         log(f"[{tag}] pooled trial: val_F1={result['best_val_f1']:.4f}")
