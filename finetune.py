@@ -488,7 +488,8 @@ def _shared_label_ids(Y, U, users, restrict_ids=None):
 
 
 def evaluate(model, loader, criterion, device, model_type="resnet", loss_mode="ce", target_source_id=None,
-             return_per_class=False, return_confusion=False, n_classes=None, eval_label_ids=None):
+             return_per_class=False, return_confusion=False, n_classes=None, eval_label_ids=None,
+             plain_labels=False):
     """loss_mode="ce_scl": `loader` yields (inputs, labels, source_id) batches. Both
     the reported loss AND F1/accuracy/per-class-F1 are computed over target-dataset
     samples only (falling back to every sample in the loader if the target
@@ -510,6 +511,10 @@ def evaluate(model, loader, criterion, device, model_type="resnet", loss_mode="c
     additionally returns a confusion matrix scored against the same
     eval_label_ids/labels_arg as per-class F1, so rows/columns line up with
     per_class_f1's class ordering.
+
+    plain_labels=True ignores eval_label_ids/n_classes and scores with
+    sklearn's default label set (classes present in y_true or y_pred), i.e.
+    upstream HARBench's f1_score(average='macro').
     """
     model.eval()
     total_loss = 0.0
@@ -562,7 +567,9 @@ def evaluate(model, loader, criterion, device, model_type="resnet", loss_mode="c
     all_preds = np.array(all_preds)
     all_labels = np.array(all_labels)
     loss = total_loss / total_loss_count if total_loss_count > 0 else 0
-    if eval_label_ids is not None:
+    if plain_labels:
+        labels_arg = None
+    elif eval_label_ids is not None:
         labels_arg = eval_label_ids
     else:
         labels_arg = list(range(n_classes)) if n_classes is not None else None
@@ -886,6 +893,12 @@ def train_model(train_loader, val_loader, test_loader, n_classes, num_sensors,
         metrics["val_f1_per_class_all_classes"] = [float(v) for v in v_all_pc]
         metrics["test_f1_all_classes"] = float(t_all)
         metrics["test_f1_per_class_all_classes"] = [float(v) for v in t_all_pc]
+
+    # Upstream-style plain macro-F1 (no label set) on the same best-epoch model.
+    _, t_plain, _ = evaluate(
+        model, test_loader, criterion, device, model_type, loss_mode=loss_mode,
+        target_source_id=target_source_id, plain_labels=True)
+    metrics["test_f1_plain"] = float(t_plain)
 
     if log_diagnostics:
         metrics["diagnostics"] = _finalize_diagnostics(best_diag, best_epoch, dataset_id_map, alpha)
@@ -1464,7 +1477,7 @@ def run_finetune_multi_candidate(args):
     model_type = model_config["type"]
 
     prior_weights_path = args.weights
-    if prior_weights_path is None and "weights" in model_config:
+    if prior_weights_path is None and "weights" in model_config and not args.scratch:
         prior_weights_path = model_config["weights"]
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -2109,6 +2122,9 @@ Examples:
     parser.add_argument("--sensors", type=str, nargs="+", default=None, help="Sensor names")
     parser.add_argument("--weights", type=str, default=None,
                         help="Override pretrained weights path (optional)")
+    parser.add_argument("--scratch", action="store_true",
+                        help="--candidates_manifest_json only: start prior_backbone and every candidate's pooled trial "
+                             "from random init instead of --weights (which must then be omitted)")
     parser.add_argument("--data_root", type=str, default=None, help="Data root path")
     parser.add_argument("--device", type=str, default="cuda:0", help="Device")
     parser.add_argument("--epochs", type=int, default=100, help="Max epochs")
@@ -2223,8 +2239,12 @@ Examples:
         parser.error("--candidates_manifest_json is mutually exclusive with --single_split/--baseline_manifest")
     if args.candidates_manifest_json and not (args.dataset and args.sensors and args.data_root):
         parser.error("--candidates_manifest_json requires --dataset/--sensors/--data_root (the target's full data root)")
-    if args.candidates_manifest_json and not args.weights:
-        parser.error("--candidates_manifest_json requires --weights (the prior backbone)")
+    if args.scratch and not args.candidates_manifest_json:
+        parser.error("--scratch is only for --candidates_manifest_json")
+    if args.scratch and args.weights:
+        parser.error("--scratch and --weights are mutually exclusive")
+    if args.candidates_manifest_json and not args.weights and not args.scratch:
+        parser.error("--candidates_manifest_json requires --weights (the prior backbone) or --scratch (random init)")
     if args.candidates_manifest_json and not args.custom_test_users:
         parser.error("--candidates_manifest_json requires --custom_test_users/--custom_val_users (the held-out/val split)")
 
