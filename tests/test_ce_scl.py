@@ -379,6 +379,39 @@ def test_dataset_weights_sampler_unequal_classes():
     print("test_dataset_weights_sampler_unequal_classes: PASS")
 
 
+def test_class_profile_sampler():
+    """class_profile must move mass between a dataset's classes without changing
+    the dataset's total mass, and class_profile=None must stay the equal split."""
+    X, Y, U = make_synthetic_pool(n_per_user=60, n_classes=3)
+    test_users = ["dsA::5", "dsA::6", "dsB::5", "dsB::6"]
+    val_users = ["dsA::3", "dsA::4", "dsB::3", "dsB::4"]
+    names = ["c0", "c1", "c2"]
+    dataset_weights = {"dsA": 0.5, "dsB": 0.5}
+    profile = {"dsB": {"c0": 0.6, "c1": 0.3, "c2": 0.1}}   # dsA absent -> equal split
+    logged = []
+    train_loader, _, _, ids = create_dataloaders(
+        X, Y, U, test_users, val_users, batch_size=32, num_workers=0, return_source_id=True,
+        dataset_weights=dataset_weights, class_profile=profile, group_names=names, log_func=logged.append)
+    assert any("class split inside dsB" in m for m in logged)
+    cnt = Counter()
+    for _ in range(40):
+        for _, y, sid in train_loader:
+            cnt.update(zip(sid.tolist(), y.tolist()))
+    b = {c: cnt[(ids["dsB"], c)] for c in range(3)}
+    a = {c: cnt[(ids["dsA"], c)] for c in range(3)}
+    tb, ta = sum(b.values()), sum(a.values())
+    assert abs(tb / (tb + ta) - 0.5) < 0.03, "dataset total mass moved"
+    for c, want in enumerate([0.6, 0.3, 0.1]):
+        assert abs(b[c] / tb - want) < 0.03, f"dsB class {c}: {b[c] / tb:.3f} vs {want}"
+        assert abs(a[c] / ta - 1 / 3) < 0.03, "dsA must keep the equal split"
+    try:
+        create_dataloaders(X, Y, U, test_users, val_users, dataset_weights=dataset_weights, class_profile=profile)
+        raise AssertionError("class_profile without group_names must raise")
+    except ValueError:
+        pass
+    print("test_class_profile_sampler: PASS")
+
+
 if __name__ == "__main__":
     test_hardataset_source_id()
     test_create_dataloaders_return_source_id()
@@ -389,4 +422,5 @@ if __name__ == "__main__":
     test_ce_mode_backward_compatible()
     test_dataset_weights_sampler()
     test_dataset_weights_sampler_unequal_classes()
+    test_class_profile_sampler()
     print("\nAll CE+SCL tests passed.")

@@ -320,7 +320,7 @@ def _finalize_diagnostics(diag, epoch, dataset_id_map, alpha):
 
 def train_epoch(model, loader, criterion, optimizer, device, model_type="resnet", max_iterations=None,
                  loss_mode="ce", alpha=0.5, scl_criterion=None, projection_head=None,
-                 target_source_id=None, diagnostics=False):
+                 target_source_id=None, diagnostics=False, pair_diag=None):
     """loss_mode="ce_scl" expects `loader` to yield (inputs, labels, source_id) batches
     (i.e. its dataset was built with return_source_id=True) and requires model_type to
     be a plain backbone+TwoLayerClassifier model ("patchtst"/"moment" foundation-model
@@ -369,8 +369,12 @@ def train_epoch(model, loader, criterion, optimizer, device, model_type="resnet"
         if max_iterations is not None and i >= max_iterations:
             break
 
+        native_ids = None
         if loss_mode == "ce_scl":
-            inputs, labels, source_id = batch
+            if len(batch) == 4:      # opt-in diagnostics: dataset carries native (pre-mapping) label ids
+                inputs, labels, source_id, native_ids = batch
+            else:
+                inputs, labels, source_id = batch
             source_id = source_id.to(device)
         else:
             inputs, labels = batch
@@ -408,6 +412,9 @@ def train_epoch(model, loader, criterion, optimizer, device, model_type="resnet"
                     diag["n_positive_pairs"] += scl_stats["n_positive_pairs"]
                 else:
                     scl_loss = scl_criterion(projected, labels[source_mask])
+                if pair_diag is not None:
+                    pair_diag.update(source_id[source_mask], native_ids.to(device)[source_mask], labels[source_mask],
+                                     projected.detach(), bool(scl_loss.requires_grad and float(scl_loss.detach()) != 0.0))
             else:
                 scl_loss = outputs.new_zeros(())
 
@@ -805,8 +812,10 @@ def train_model(train_loader, val_loader, test_loader, n_classes, num_sensors,
             model, train_loader, criterion, optimizer, device, model_type, max_iterations=max_iter,
             loss_mode=loss_mode, alpha=alpha, scl_criterion=scl_criterion,
             projection_head=projection_head, target_source_id=target_source_id,
-            diagnostics=log_diagnostics,
+            diagnostics=log_diagnostics, pair_diag=getattr(args, "_pair_diag", None),
         )
+        if getattr(args, "_pair_diag", None) is not None:
+            args._pair_diag.end_epoch(epoch + 1)
         val_loss, val_f1, val_acc = evaluate(
             model, val_loader, criterion, device, model_type,
             loss_mode=loss_mode, target_source_id=target_source_id, n_classes=n_classes,
@@ -893,6 +902,20 @@ def train_model(train_loader, val_loader, test_loader, n_classes, num_sensors,
         metrics["val_f1_per_class_all_classes"] = [float(v) for v in v_all_pc]
         metrics["test_f1_all_classes"] = float(t_all)
         metrics["test_f1_per_class_all_classes"] = [float(v) for v in t_all_pc]
+
+    args._last_proj = projection_head   # diagnostics: lets the caller embed the latent probe through the trained head
+    if getattr(args, "_val_errors_path", None):
+        # diagnostics: UNFILTERED validation confusion over the full label list, at the validation-selected (best-epoch) model
+        from src.diagnostics import validation_errors_payload
+        _, _, _, _pc_full, _cm_full = evaluate(
+            model, val_loader, criterion, device, model_type, loss_mode=loss_mode,
+            target_source_id=target_source_id, return_per_class=True, return_confusion=True, n_classes=n_classes,
+            eval_label_ids=list(range(n_classes)))
+        os.makedirs(os.path.dirname(args._val_errors_path) or ".", exist_ok=True)
+        json.dump(validation_errors_payload(getattr(args, "_diag_tag", ""), best_epoch, getattr(args, "_val_names", {}), n_classes,
+                                            _cm_full, _pc_full, list(val_ids) if val_ids is not None else None,
+                                            extra={"reported_best_val_f1": float(best_val_f1)}, codes_by_id=getattr(args, "_val_codes", None)),
+                  open(args._val_errors_path, "w"), indent=1)
 
     # Upstream-style plain macro-F1 (no label set) on the same best-epoch model.
     _, t_plain, _ = evaluate(
@@ -1257,11 +1280,16 @@ def run_finetune_pooled(args):
     log(f"Pairs: {[(p['dataset'], p['sensors']) for p in pairs]}")
 
     dataset_weights = None
+    class_profile = None
     if getattr(args, "use_manifest_weights", False):
         dataset_weights = {
             p["dataset"]: p["weight"]["requested"] for p in pairs if "weight" in p
         }
         log(f"--use_manifest_weights: dataset_weights={dataset_weights}")
+        class_profile = {p["dataset"]: p["weight"]["class_profile"] for p in pairs
+                         if "weight" in p and p["weight"].get("class_profile")} or None
+        if class_profile:
+            log(f"--use_manifest_weights: class_profile for {sorted(class_profile)}")
 
     # Load and pool data
     X, Y, U, group_names = load_pooled_datasets(pairs)
@@ -1318,6 +1346,7 @@ def run_finetune_pooled(args):
             test_mask=test_mask, val_mask=val_mask,
             return_source_id=True,
             dataset_weights=dataset_weights, log_func=log,
+            class_profile=class_profile, group_names=group_names,
             shuffle_source_labels=getattr(args, "shuffle_source_labels", False),
             shuffle_seed=getattr(args, "shuffle_seed", None),
             target_dataset_name=target_dataset,
@@ -1517,6 +1546,9 @@ def run_finetune_multi_candidate(args):
     ho_val_label_ids = _shared_label_ids(Y_t, U_t, _as_keys(held_out_fold["val"]))
     log(f"Shared-class scoring: test classes {ho_test_label_ids}, val classes {ho_val_label_ids}")
 
+    log(f"few-shot: fewshot_target_ratio={args.fewshot_target_ratio} fewshot_seed={args.fewshot_seed} "
+        f"data_ratio={args.data_ratio}")
+
     def _held_out_eval(weights_path, tag):
         """Same single-split finetune+eval held_out.run_held_out_eval()
         already does as a subprocess: fine-tune `weights_path` once more on
@@ -1525,10 +1557,21 @@ def run_finetune_multi_candidate(args):
         finetune has no source/baseline pool to run SCL against."""
         set_seed(args.seed)
         args.loss_mode = "ce"
+        _dd = os.environ.get("HARBENCH_DIAG_DIR")
+        if _dd:
+            from src.diagnostics import native_names
+            _codes = native_names(args.data_root, args.dataset)
+            _lm = (candidates[0]["manifest"][0].get("label_map") or {}) if candidates else {}   # target idx -> readable name
+            _nm = {int(k): v for k, v in _lm.items()} or _codes
+            args._val_errors_path, args._diag_tag, args._val_names = os.path.join(_dd, tag, "validation_errors.json"), tag, _nm
+            args._val_codes = _codes
+            args._pair_diag = None
         train_loader, val_loader, test_loader = create_dataloaders(
             X_t, Y_t, U_t, held_out_fold["test"], held_out_fold["val"],
             batch_size=args.batch_size, data_ratio=args.data_ratio,
             max_samples_per_epoch=args.max_samples_per_epoch,
+            target_data_ratio=args.fewshot_target_ratio, fewshot_seed=args.fewshot_seed,
+            log_func=log,
         )
         result, model = train_model(
             train_loader, val_loader, test_loader, n_classes_t, num_sensors_t,
@@ -1537,6 +1580,8 @@ def run_finetune_multi_candidate(args):
             val_eval_label_ids=ho_val_label_ids, test_eval_label_ids=ho_test_label_ids,
         )
         log(f"[{tag}] held-out eval: F1={result['test_f1']:.4f}, Acc={result['test_acc']:.4f}")
+        args._val_errors_path = None
+        _save_latent(tag, "target_only_final", model, None)
         del model
         if device.type == "cuda":
             torch.cuda.empty_cache()
@@ -1560,13 +1605,23 @@ def run_finetune_multi_candidate(args):
         log(f"[{tag}] pairs: {[(p['dataset'], p['sensors']) for p in pairs]}")
 
         dataset_weights = None
+        class_profile = None
         if getattr(args, "use_manifest_weights", False):
             dataset_weights = {
                 p["dataset"]: p["weight"]["requested"] for p in pairs if "weight" in p
             }
             log(f"[{tag}] --use_manifest_weights: dataset_weights={dataset_weights}")
+            class_profile = {p["dataset"]: p["weight"]["class_profile"] for p in pairs
+                             if "weight" in p and p["weight"].get("class_profile")} or None
+            if class_profile:
+                log(f"[{tag}] --use_manifest_weights: class_profile for {sorted(class_profile)}")
 
-        X, Y, U, group_names = load_pooled_datasets(pairs)
+        _dd = os.environ.get("HARBENCH_DIAG_DIR")
+        native = None
+        if _dd:
+            X, Y, U, group_names, native = load_pooled_datasets(pairs, return_native=True)
+        else:
+            X, Y, U, group_names = load_pooled_datasets(pairs)
         n_classes = len(group_names)
         num_sensors = 1  # load_pooled_datasets() requires exactly one sensor per pair
 
@@ -1583,12 +1638,33 @@ def run_finetune_multi_candidate(args):
 
         train_loader, val_loader, test_loader, dataset_id_map = create_dataloaders(
             X, Y, U, test_users, val_users,
-            batch_size=args.batch_size, data_ratio=args.data_ratio,
+            batch_size=args.batch_size,
+            data_ratio=1.0 if args.fewshot_target_ratio else args.data_ratio,
             max_samples_per_epoch=args.max_samples_per_epoch,
             test_mask=test_mask, val_mask=val_mask,
             return_source_id=True,
             dataset_weights=dataset_weights, log_func=log,
+            class_profile=class_profile, group_names=group_names,
+            target_dataset_name=target_dataset_name,
+            target_data_ratio=args.fewshot_target_ratio, fewshot_seed=args.fewshot_seed,
+            native=None if native is None else native["native_id"],
         )
+        args._pair_diag = None
+        if _dd:
+            from src.diagnostics import PairDiag, build_label_rows, write_jsonl
+            _ds = train_loader.dataset
+            _inv = {v: k for k, v in dataset_id_map.items()}
+            _el = {}
+            for _s, _n in zip(_ds.source_id.tolist(), _ds.native.tolist()):
+                _el[(_inv[_s], _n)] = _el.get((_inv[_s], _n), 0) + 1
+            _rows = build_label_rows(native, "pooled_finetune", eligible=_el,
+                                     note="eligible = train-split windows after the stage's filtering/few-shot subsampling")
+            _out = os.path.join(_dd, tag)
+            write_jsonl(os.path.join(_out, "label_map.jsonl"), _rows, mode="w")
+            for _f in ("pair_audit.jsonl", "pair_coverage.jsonl"):
+                if os.path.exists(os.path.join(_out, _f)):
+                    os.remove(os.path.join(_out, _f))
+            args._pair_diag = PairDiag(_out, "pooled_finetune", _rows, _inv, audit_pairs=True, device=device, extra={"arm": tag})
         if target_dataset_name not in dataset_id_map:
             raise KeyError(
                 f"[{tag}] target dataset {target_dataset_name!r} not found among "
@@ -1611,6 +1687,8 @@ def run_finetune_multi_candidate(args):
             dataset_id_map=dataset_id_map,
         )
         log(f"[{tag}] pooled trial: val_F1={result['best_val_f1']:.4f}")
+        args._pair_diag = None
+        _save_latent(tag, f"pooled_selected_epoch", model, getattr(args, "_last_proj", None))
 
         os.makedirs(os.path.dirname(backbone_out_path) or ".", exist_ok=True)
         torch.save(_extract_backbone_state_dict(model, model_type), backbone_out_path)
@@ -1618,6 +1696,23 @@ def run_finetune_multi_candidate(args):
         if device.type == "cuda":
             torch.cuda.empty_cache()
         return result
+
+    _probe_path = os.environ.get("HARBENCH_PROBE_NPZ")
+    _dd0 = os.environ.get("HARBENCH_DIAG_DIR")
+
+    def _save_latent(tag, name, model_, proj_):
+        """opt-in: embed the fixed latent probe (HARBENCH_PROBE_NPZ) with `model_` -> <diag>/<tag>/latent/<name>.npz"""
+        if not (_probe_path and _dd0):
+            return
+        from src.diagnostics import embed_probe, save_latent
+        pz = np.load(_probe_path)
+        save_latent(os.path.join(_dd0, tag, "latent", name + ".npz"), str(pz["probe_id"]),
+                    embed_probe(pz["X"], model_, proj_, device), space="backbone feature (+ SupCon projection if present)")
+
+    if _probe_path and _dd0:   # the frozen starting checkpoint, once per run
+        _m0 = TwoLayerClassifier(create_backbone(model_type, prior_weights_path, 1, 3, device), n_classes=1).to(device)
+        _save_latent("prior_backbone", "mtl_pretrained", _m0, None)
+        del _m0
 
     results = [{
         "candidate_id": "prior_backbone", "weights_path": prior_weights_path, "baselines": {},
@@ -2135,6 +2230,12 @@ Examples:
                         help="Max samples per epoch (default=3200). Capped to training data size.")
     parser.add_argument("--seed", type=int, default=SEED, help="Random seed")
     parser.add_argument("--data_ratio", type=float, default=1.0, help="Training data ratio (for few-shot)")
+    parser.add_argument("--fewshot_target_ratio", type=float, default=None,
+                        help="--candidates_manifest_json only: target-only few-shot. Subsample ONLY the target's "
+                             "train windows (pooled stage AND target-only stage use the same windows); sources keep "
+                             "100%%. Overrides --data_ratio in this mode. Val/test are never subsampled.")
+    parser.add_argument("--fewshot_seed", type=int, default=None,
+                        help="RandomState seed for --fewshot_target_ratio's window draw (default: global RNG)")
     parser.add_argument("--output_dir", type=str, default="results", help="Output directory")
     parser.add_argument("--quiet", action="store_true", help="Suppress epoch-level output")
     parser.add_argument("--zeroshot", nargs="?", const="all", default=None,

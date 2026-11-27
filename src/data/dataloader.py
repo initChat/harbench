@@ -266,6 +266,7 @@ def load_dataset(dataset, sensors, data_root=None, modality="ACC"):
             # Remap labels to consecutive integers starting from 0
             label_map = {old: new for new, old in enumerate(sorted(usable_classes))}
             Y = np.array([label_map[y] for y in Y])
+            LOAD_REMAP[dataset_lower] = sorted(usable_classes)   # diagnostics: loader idx i <-> on-disk id [i]
 
             print(f"  Remaining classes: {len(usable_classes)}, samples: {len(Y)}")
 
@@ -325,7 +326,10 @@ def dataset_group_names(dataset_name, label_map=None):
     return {group for group in idx_to_group.values() if group != "undefined"}
 
 
-def load_pooled_datasets(pairs, modality="ACC"):
+LOAD_REMAP = {}   # dataset_lower -> sorted on-disk class ids, set by load_dataset() when USABLE_CLASSES remapped the labels
+
+
+def load_pooled_datasets(pairs, modality="ACC", return_native=False):
     """
     Load and pool several selected baseline (dataset, sensors, data_root) pairs
     into one joint training set, remapping each pair's own labels onto
@@ -367,12 +371,14 @@ def load_pooled_datasets(pairs, modality="ACC"):
         raise ValueError("load_pooled_datasets() requires at least one pair")
 
     X_parts, group_parts, U_parts = [], [], []
+    native_parts, table = [], []   # diagnostics only (return_native=True)
 
     for pair in pairs:
         dataset = pair["dataset"]
         sensors = pair["sensors"]
         data_root = pair.get("data_root")
 
+        LOAD_REMAP.pop(str(dataset).lower(), None)
         X, Y_idx, U = load_dataset(dataset, sensors, data_root, modality=modality)
 
         caller_label_map = pair.get("label_map")
@@ -393,6 +399,14 @@ def load_pooled_datasets(pairs, modality="ACC"):
         # get_dataset_label_mapping) already raised UncategorizedLabelError
         # for any real taxonomy gap, so nothing else needs filtering here.
         keep = groups != "undefined"
+        if return_native:
+            _remap = LOAD_REMAP.get(str(dataset).lower())
+            _disk = np.asarray(_remap, dtype=np.int64)[Y_idx] if _remap is not None else Y_idx.astype(np.int64)
+            native_parts.append(_disk[keep])
+            table.append({"dataset": dataset, "placement": ",".join(map(str, sensors)), "data_root": data_root,
+                          "idx_to_group": {int(k): v for k, v in idx_to_group.items()},
+                          "loader_idx": Y_idx.astype(np.int64), "disk_idx": _disk, "keep": keep,
+                          "remapped_by_usable_classes": _remap is not None})
         X_parts.append(X[keep])
         group_parts.append(groups[keep])
         U_parts.append(np.array([f"{dataset}::{u}" for u in U[keep]]))
@@ -405,16 +419,39 @@ def load_pooled_datasets(pairs, modality="ACC"):
     group_to_idx = {group: i for i, group in enumerate(group_names)}
     Y = np.array([group_to_idx[group] for group in all_groups], dtype=np.int64)
 
+    if return_native:
+        native = {"native_id": np.concatenate(native_parts, axis=0), "pairs": table, "group_to_idx": group_to_idx}
+        return X, Y, U, group_names, native
     return X, Y, U, group_names
+
+
+def _target_rows(U_sub, target_dataset_name):
+    """Boolean mask of the target dataset's rows: U prefix == target_dataset_name, or every row when
+    U carries no "<dataset>::" namespace (single-dataset run)."""
+    pref = np.array([str(u).split("::", 1)[0] if "::" in str(u) else "" for u in U_sub])
+    if target_dataset_name is None or not (pref != "").any():
+        return np.ones(len(U_sub), dtype=bool)
+    return pref == target_dataset_name
 
 
 def create_dataloaders(X, Y, U, test_users, val_users, batch_size=64, num_workers=0, data_ratio=1.0,
                        use_weighted_sampler=True, max_samples_per_epoch=None,
                        test_mask=None, val_mask=None, return_source_id=False,
                        dataset_weights=None, log_func=None,
-                       shuffle_source_labels=False, shuffle_seed=None, target_dataset_name=None):
+                       shuffle_source_labels=False, shuffle_seed=None, target_dataset_name=None,
+                       class_profile=None, group_names=None,
+                       target_data_ratio=None, fewshot_seed=None, native=None):
     """
     Create DataLoaders for train/val/test.
+
+    target_data_ratio / fewshot_seed: target-only few-shot. When target_data_ratio < 1,
+        ONLY the target dataset's training windows are subsampled (same stratified rule as
+        data_ratio: >=1 window per class, rest random); every other dataset's training windows
+        are kept in full. Target rows = U prefix == target_dataset_name, or all rows when U has
+        no "::" namespace (single-dataset run). Val/test are never subsampled. With fewshot_seed
+        the draw uses a local RandomState over the target's train rows only (classes visited in
+        order of first appearance), so a pooled run and a single-dataset run on the same target
+        users select the identical windows. Independent of data_ratio.
 
     Args:
         X: Sensor data (N, C, T)
@@ -449,6 +486,15 @@ def create_dataloaders(X, Y, U, test_users, val_users, batch_size=64, num_worker
             dataset absent from the dict defaults to weight 1.0. None
             (default) preserves today's behavior exactly -- pure uniform
             (dataset, class) balancing.
+        class_profile: Optional {dataset_name: {class_name: beta}} (needs
+            dataset_weights and group_names). Replaces the equal 1/n_classes split
+            of a dataset's mass with beta(c|dataset), renormalised over the classes
+            present in this train split (a class missing from the profile gets the
+            profile's smallest beta). The dataset's total mass stays its
+            dataset_weights entry exactly. A dataset absent from class_profile keeps
+            the equal split; None (default) is byte-identical to before.
+        group_names: list mapping Y's integer class ids to class names (the 4th
+            return value of load_pooled_datasets); required with class_profile.
         log_func: Optional callable(str). When dataset_weights is given, used to
             log the resulting expected per-dataset sampling fraction so it can
             be checked against the requested weights.
@@ -505,6 +551,8 @@ def create_dataloaders(X, Y, U, test_users, val_users, batch_size=64, num_worker
     X_train, Y_train = X[train_mask], Y[train_mask]
     X_val, Y_val = X[val_mask], Y[val_mask]
     X_test, Y_test = X[test_mask], Y[test_mask]
+    # diagnostics: native (pre-mapping) label id per window, kept aligned with X_train through every subsample below
+    native_train = None if native is None else np.asarray(native)[train_mask]
 
     dataset_id_map = None
     source_id_train = source_id_val = source_id_test = None
@@ -534,6 +582,7 @@ def create_dataloaders(X, Y, U, test_users, val_users, batch_size=64, num_worker
 
     # Save original training data count (for samples_per_epoch calculation in few-shot)
     n_train_original = len(X_train)
+    U_train = U[train_mask]   # kept aligned with X_train/Y_train through every subsample below
 
     # Few-shot: Stratified sampling (guarantee at least 1 sample per class)
     if data_ratio < 1.0:
@@ -561,11 +610,56 @@ def create_dataloaders(X, Y, U, test_users, val_users, batch_size=64, num_worker
         indices = np.array(selected_indices)
         X_train = X_train[indices]
         Y_train = Y_train[indices]
+        U_train = U_train[indices]
+        if native_train is not None:
+            native_train = native_train[indices]
         if source_id_train is not None:
             source_id_train = source_id_train[indices]
 
+    # Target-only few-shot (sources stay at full size).
+    if target_data_ratio is not None and target_data_ratio < 1.0:
+        _is_target = _target_rows(U_train, target_dataset_name)
+        t_idx = np.where(_is_target)[0]                       # target train rows, in array order
+        if len(t_idx) == 0:
+            raise ValueError(f"create_dataloaders: no target training rows for {target_dataset_name!r}")
+        rng = np.random.RandomState(fewshot_seed) if fewshot_seed is not None else np.random
+        Yt = Y_train[t_idx]
+        _, first = np.unique(Yt, return_index=True)           # classes in order of first appearance
+        picked = []
+        for fi in np.sort(first):
+            cls_pos = np.where(Yt == Yt[fi])[0]
+            picked.append(int(rng.choice(cls_pos, 1)[0]))
+        n_target_keep = max(1, int(len(t_idx) * target_data_ratio))
+        remaining = n_target_keep - len(picked)
+        if remaining > 0:
+            avail = np.array(sorted(set(range(len(t_idx))) - set(picked)))
+            if len(avail) > 0:
+                picked.extend(rng.choice(avail, min(remaining, len(avail)), replace=False).tolist())
+        keep = np.sort(np.concatenate([np.where(~_is_target)[0], t_idx[np.array(picked)]]))
+        _tsel = np.sort(t_idx[np.array(picked)])
+        import hashlib
+        _fp = hashlib.sha1(np.ascontiguousarray(X_train[_tsel]).tobytes()).hexdigest()[:12]
+        _msg = (f"create_dataloaders: target-only few-shot {target_data_ratio}: target train windows "
+                f"{len(t_idx)} -> {len(picked)} (classes {len(np.unique(Yt))}), sources kept "
+                f"{int((~_is_target).sum())}, fewshot_seed={fewshot_seed}, window fingerprint={_fp}")
+        (log_func or print)(_msg)
+        X_train, Y_train, U_train = X_train[keep], Y_train[keep], U_train[keep]
+        if native_train is not None:
+            native_train = native_train[keep]
+        if source_id_train is not None:
+            source_id_train = source_id_train[keep]
+
+    # Leak guard (target only; pooled window-split sources overlap roles by design).
+    _guard = target_dataset_name is not None or not any("::" in str(u) for u in U_train[:1])
+    _ut = set(map(str, np.unique(U_train[_target_rows(U_train, target_dataset_name)])))
+    _uv = set(map(str, np.unique(U[val_mask][_target_rows(U[val_mask], target_dataset_name)])))
+    _ue = set(map(str, np.unique(U[test_mask][_target_rows(U[test_mask], target_dataset_name)])))
+    if _guard and ((_ut & _uv) or (_ut & _ue) or (_uv & _ue)):
+        raise AssertionError(f"create_dataloaders: target user overlap train&val={sorted(_ut & _uv)[:5]} "
+                             f"train&test={sorted(_ut & _ue)[:5]} val&test={sorted(_uv & _ue)[:5]}")
+
     # Create datasets
-    train_dataset = HARDataset(X_train, Y_train, source_id=source_id_train)
+    train_dataset = HARDataset(X_train, Y_train, source_id=source_id_train, native=native_train)
     val_dataset = HARDataset(X_val, Y_val, source_id=source_id_val)
     test_dataset = HARDataset(X_test, Y_test, source_id=source_id_test)
 
@@ -580,7 +674,7 @@ def create_dataloaders(X, Y, U, test_users, val_users, batch_size=64, num_worker
     # (single-dataset runs) collapses to one implicit dataset group, so this
     # is a no-op there -- identical to the old class-only weighting.
     if use_weighted_sampler:
-        train_dataset_ids = [str(u).split("::", 1)[0] if "::" in str(u) else "" for u in U[train_mask]]
+        train_dataset_ids = [str(u).split("::", 1)[0] if "::" in str(u) else "" for u in U_train]
         group_count = Counter(zip(train_dataset_ids, Y_train.tolist()))
         if dataset_weights:
             # Two-level weighting: a dataset's total sampled mass must equal
@@ -596,8 +690,27 @@ def create_dataloaders(X, Y, U, test_users, val_users, batch_size=64, num_worker
             classes_per_dataset = defaultdict(set)
             for ds, cls in group_count:
                 classes_per_dataset[ds].add(cls)
+            if class_profile and group_names is None:
+                raise ValueError("create_dataloaders: class_profile needs group_names")
+            class_share = {}   # (ds, cls) -> share of the dataset's mass
+            for ds, classes in classes_per_dataset.items():
+                prof = class_profile.get(ds) if class_profile else None
+                if not prof:
+                    for cls in classes:
+                        class_share[(ds, cls)] = 1.0 / len(classes)
+                    continue
+                floor = min(prof.values())
+                raw = {cls: float(prof.get(group_names[cls], floor)) for cls in classes}
+                total = sum(raw.values())
+                if total <= 0:
+                    raise ValueError(f"create_dataloaders: class_profile for {ds!r} sums to <= 0 over {sorted(classes)}")
+                unmatched = sorted(group_names[cls] for cls in classes if group_names[cls] not in prof)
+                if unmatched and log_func is not None:
+                    log_func(f"create_dataloaders: class_profile[{ds}] has no entry for {unmatched}; using min beta")
+                for cls in classes:
+                    class_share[(ds, cls)] = raw[cls] / total
             group_weights = {
-                (ds, cls): dataset_weights.get(ds, 1.0) / len(classes_per_dataset[ds]) / count
+                (ds, cls): dataset_weights.get(ds, 1.0) * class_share[(ds, cls)] / count
                 for (ds, cls), count in group_count.items()
             }
             if log_func is not None:
@@ -611,6 +724,13 @@ def create_dataloaders(X, Y, U, test_users, val_users, batch_size=64, num_worker
                 frac_str = ", ".join(
                     f"{ds}={mass / total_mass:.4f}" for ds, mass in sorted(ds_mass.items())
                 )
+                if class_profile:
+                    for ds in sorted(class_profile):
+                        if ds in ds_mass and class_profile[ds]:
+                            parts = ", ".join(
+                                f"{group_names[cls]}={group_weights[(d2, cls)] * group_count[(d2, cls)] / ds_mass[ds]:.3f}"
+                                for (d2, cls) in sorted(group_count) if d2 == ds)
+                            log_func(f"create_dataloaders: class split inside {ds} (share of its mass): {{{parts}}}")
                 log_func(
                     f"create_dataloaders: dataset_weights requested={dataset_weights} -> "
                     f"expected per-dataset sampling fraction={{{frac_str}}}"
